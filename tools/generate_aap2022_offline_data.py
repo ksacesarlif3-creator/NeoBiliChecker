@@ -7,6 +7,8 @@ The generated Kotlin file contains values for postnatal ages 1..336 hours.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import re
 import subprocess
 import sys
@@ -47,7 +49,7 @@ def download() -> None:
                 raise RuntimeError("downloaded content is not a PDF")
             PDF.write_bytes(payload)
             return
-        except Exception as exc:  # try mirror
+        except Exception as exc:
             last_error = exc
     raise RuntimeError(f"Unable to download AAP supplemental PDF: {last_error}")
 
@@ -78,7 +80,6 @@ def parse_tables() -> dict[tuple[int, int], dict[int, float]]:
             current_table = int(table_match.group(1))
             current_ga = None
             continue
-
         if current_table is None:
             continue
 
@@ -87,7 +88,6 @@ def parse_tables() -> dict[tuple[int, int], dict[int, float]]:
             current_ga = int(ga_match.group(1))
             curves.setdefault((current_table, current_ga), {})
             continue
-
         if current_ga is None:
             continue
 
@@ -104,12 +104,10 @@ def parse_tables() -> dict[tuple[int, int], dict[int, float]]:
         if len(values) not in (23, 24):
             continue
 
-        # At day 0 the guideline intentionally omits age 0 h, so the 23 values
-        # correspond to ages 1..23. All later rows have hour 0..23.
+        # Day 0 omits age 0 h, so its 23 values correspond to ages 1..23.
         first_hour = 1 if day == 0 and len(values) == 23 else 0
         for offset, value in enumerate(values):
-            hour_on_day = first_hour + offset
-            age = day * 24 + hour_on_day
+            age = day * 24 + first_hour + offset
             if 1 <= age <= 336:
                 curves[(current_table, current_ga)][age] = value
 
@@ -118,7 +116,6 @@ def parse_tables() -> dict[tuple[int, int], dict[int, float]]:
 
 def normalize(curves: dict[tuple[int, int], dict[int, float]]) -> dict[tuple[int, int], list[float]]:
     normalized: dict[tuple[int, int], list[float]] = {}
-
     for table, gas in EXPECTED_GA.items():
         for ga in gas:
             key = (table, ga)
@@ -130,19 +127,15 @@ def normalize(curves: dict[tuple[int, int], dict[int, float]]) -> dict[tuple[int
             max_age = max(points)
             missing_internal = [age for age in range(1, max_age + 1) if age not in points]
             if missing_internal:
-                raise RuntimeError(
-                    f"Table {table}, GA {ga} has internal missing ages: {missing_internal[:12]}"
-                )
+                raise RuntimeError(f"Table {table}, GA {ga} has internal missing ages: {missing_internal[:12]}")
             last = points[max_age]
-            values = [points.get(age, last) for age in range(1, 337)]
-            normalized[key] = values
+            normalized[key] = [points.get(age, last) for age in range(1, 337)]
 
-    # Guideline tables use a single >=38-week curve in these categories.
+    # Supplemental Tables 2-4 use a single >=38-week curve.
     for table in (2, 3, 4):
         for ga in (39, 40):
             normalized[(table, ga)] = list(normalized[(table, 38)])
 
-    # Clinical integrity checks.
     for ga in range(35, 41):
         for risk in (False, True):
             p_table = 2 if risk else 1
@@ -157,7 +150,6 @@ def normalize(curves: dict[tuple[int, int], dict[int, float]]) -> dict[tuple[int
                 raise RuntimeError(f"Exchange curve is non-monotonic: GA {ga}, risk={risk}")
             if any(p >= e for p, e in zip(photo, exchange)):
                 raise RuntimeError(f"Phototherapy must remain below exchange: GA {ga}, risk={risk}")
-
     return normalized
 
 
@@ -166,52 +158,61 @@ def curve_string(values: list[float]) -> str:
 
 
 def write_kotlin(data: dict[tuple[int, int], list[float]]) -> None:
-    entries: list[tuple[str, str]] = []
+    rows: list[str] = []
     for ga in range(35, 41):
-        entries.append((f"P:N:{ga}", curve_string(data[(1, ga)])))
-        entries.append((f"P:R:{ga}", curve_string(data[(2, ga)])))
-        entries.append((f"E:N:{ga}", curve_string(data[(3, ga)])))
-        entries.append((f"E:R:{ga}", curve_string(data[(4, ga)])))
+        rows.append(f"P:N:{ga}={curve_string(data[(1, ga)])}")
+        rows.append(f"P:R:{ga}={curve_string(data[(2, ga)])}")
+        rows.append(f"E:N:{ga}={curve_string(data[(3, ga)])}")
+        rows.append(f"E:R:{ga}={curve_string(data[(4, ga)])}")
+    plain = ("\n".join(rows) + "\n").encode("utf-8")
+    payload = base64.b64encode(gzip.compress(plain, compresslevel=9, mtime=0)).decode("ascii")
 
-    lines = [
-        "package com.neobili.checker",
-        "",
-        "/**",
-        " * Hour-specific AAP 2022 hyperbilirubinemia thresholds (ages 1..336 h).",
-        " * Generated from the AAP supplemental Tables 1-4 and bundled in the APK.",
-        " * No network access is required at runtime.",
-        " */",
-        "internal object OfflineThresholdData {",
-        "    private val raw: Map<String, String> = mapOf(",
-    ]
-    for key, values in entries:
-        lines.append(f'        "{key}" to "{values}",')
-    lines += [
-        "    )",
-        "",
-        "    private val parsed: Map<String, DoubleArray> by lazy {",
-        "        raw.mapValues { (_, value) -> value.split(',').map(String::toDouble).toDoubleArray() }",
-        "    }",
-        "",
-        "    fun value(kind: Char, ga: Int, ageHours: Int, hasAdditionalRisk: Boolean): Double {",
-        "        require(ga in 35..40) { \"GA must be 35..40 weeks\" }",
-        "        require(ageHours in 1..336) { \"Age must be 1..336 hours\" }",
-        "        val risk = if (hasAdditionalRisk) \"R\" else \"N\"",
-        "        val key = \"$kind:$risk:$ga\"",
-        "        return parsed.getValue(key)[ageHours - 1]",
-        "    }",
-        "}",
-        "",
-    ]
+    kotlin = f'''package com.neobili.checker
+
+import java.io.ByteArrayInputStream
+import java.util.Base64
+import java.util.zip.GZIPInputStream
+
+/**
+ * Exact hour-specific AAP 2022 hyperbilirubinemia thresholds (ages 1..336 h).
+ * The validated table is compressed only to keep source compact; all values are
+ * bundled inside the APK and are decoded locally. No network access is used.
+ */
+internal object OfflineThresholdData {{
+    private const val PAYLOAD = "{payload}"
+
+    private val parsed: Map<String, DoubleArray> by lazy {{
+        val compressed = Base64.getDecoder().decode(PAYLOAD)
+        val text = GZIPInputStream(ByteArrayInputStream(compressed)).bufferedReader().use {{ it.readText() }}
+        text.lineSequence()
+            .filter {{ it.isNotBlank() }}
+            .associate {{ line ->
+                val split = line.indexOf('=')
+                require(split > 0) {{ "Invalid bundled threshold row" }}
+                val key = line.substring(0, split)
+                val values = line.substring(split + 1).split(',').map(String::toDouble).toDoubleArray()
+                require(values.size == 336) {{ "Invalid bundled threshold curve: $key" }}
+                key to values
+            }}
+    }}
+
+    fun value(kind: Char, ga: Int, ageHours: Int, hasAdditionalRisk: Boolean): Double {{
+        require(kind == 'P' || kind == 'E') {{ "Threshold kind must be P or E" }}
+        require(ga in 35..40) {{ "GA must be 35..40 weeks" }}
+        require(ageHours in 1..336) {{ "Age must be 1..336 hours" }}
+        val risk = if (hasAdditionalRisk) "R" else "N"
+        return parsed.getValue("$kind:$risk:$ga")[ageHours - 1]
+    }}
+}}
+'''
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text("\n".join(lines), encoding="utf-8")
+    OUT.write_text(kotlin, encoding="utf-8")
 
 
 def main() -> int:
     download()
     extract_text()
-    parsed = parse_tables()
-    normalized = normalize(parsed)
+    normalized = normalize(parse_tables())
     write_kotlin(normalized)
     print(f"Generated {OUT}")
     for sample in [(1, 40, 24), (3, 40, 24), (2, 40, 48), (4, 40, 48), (1, 35, 72)]:
