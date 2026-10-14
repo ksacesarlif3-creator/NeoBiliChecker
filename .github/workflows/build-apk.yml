@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -33,6 +33,27 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
+      - name: Install PDF table extractor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
+      - name: Generate exact offline AAP 2022 tables
+        run: python3 tools/generate_aap2022_offline_data.py
+
+      - name: Verify runtime has no network dependency
+        shell: bash
+        run: |
+          test -s app/src/main/java/com/neobili/checker/OfflineThresholdData.kt
+          if grep -R "android.permission.INTERNET" -n app/src/main; then
+            echo "Unexpected INTERNET permission"
+            exit 1
+          fi
+          if grep -R -E "peditools\.org|okhttp3|org\.jsoup" -n app/src/main app/build.gradle.kts; then
+            echo "Unexpected runtime network dependency"
+            exit 1
+          fi
+
       - name: Set up Gradle 9.6
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -47,6 +68,13 @@ jobs:
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: NeoBiliChecker-debug-apk
+          name: NeoBiliChecker-offline-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload generated threshold source
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoBiliChecker-offline-threshold-source
+          path: app/src/main/java/com/neobili/checker/OfflineThresholdData.kt
           if-no-files-found: error
