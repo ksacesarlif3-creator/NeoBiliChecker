@@ -1,11 +1,9 @@
 package com.neobili.checker
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
 data class UiState(
     val ga: Int = 40,
@@ -21,7 +19,7 @@ data class UiState(
 )
 
 class MainViewModel(
-    private val repository: PediToolsThresholdRepository = PediToolsThresholdRepository()
+    private val repository: OfflineThresholdRepository = OfflineThresholdRepository()
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -62,22 +60,23 @@ class MainViewModel(
             return
         }
 
-        viewModelScope.launch {
-            _state.value = _state.value.copy(loading = true, error = null, result = null)
-            runCatching {
-                repository.getThresholds(input.gestationalAgeWeeks, input.ageHours, input.riskFactors.anyAdditional)
-            }.onSuccess { thresholds ->
-                _state.value = _state.value.copy(
-                    loading = false,
-                    result = BilirubinRules.interpret(input, thresholds),
-                    error = null,
-                )
-            }.onFailure { err ->
-                _state.value = _state.value.copy(
-                    loading = false,
-                    error = "Unable to retrieve verified thresholds. No estimate was used. Check internet connection and try again. (${err.message ?: "unknown error"})"
-                )
-            }
+        runCatching {
+            repository.getThresholds(
+                ga = input.gestationalAgeWeeks,
+                ageHours = input.ageHours,
+                hasAdditionalRisk = input.riskFactors.anyAdditional,
+            )
+        }.onSuccess { thresholds ->
+            _state.value = _state.value.copy(
+                loading = false,
+                result = BilirubinRules.interpret(input, thresholds),
+                error = null,
+            )
+        }.onFailure { err ->
+            _state.value = _state.value.copy(
+                loading = false,
+                error = "Unable to read the bundled AAP 2022 threshold table. (${err.message ?: "unknown error"})"
+            )
         }
     }
 }
