@@ -230,6 +230,10 @@ private fun ResultCard(result: ClinicalResult, state: UiState) {
 
             ThresholdGauge(biliMg, result.thresholds)
 
+            HorizontalDivider()
+            BilirubinCurveChart(state = state, bilirubinMgDl = biliMg)
+            HorizontalDivider()
+
             ThresholdRow("Phototherapy", result.thresholds.phototherapyMgDl, result.deltaToPhoto)
             ThresholdRow("Escalation", result.thresholds.escalationMgDl, result.deltaToEscalation)
             ThresholdRow("Exchange", result.thresholds.exchangeMgDl, result.deltaToExchange)
@@ -296,7 +300,7 @@ private fun SafetyCard() {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Clinical reference only", fontWeight = FontWeight.Bold)
                 Text(
-                    "Based on the AAP 2022 guideline for newborns ≥35 weeks. This prototype retrieves non-identifying inputs (GA, age, risk category) from PediTools to obtain thresholds. It stores no patient identifiers. Verify critical treatment decisions against the current guideline/local policy.",
+                    "Based on the AAP 2022 guideline for newborns ≥35 weeks. Treatment thresholds and curves are bundled inside the app and work fully offline; no patient data are transmitted. Verify critical treatment decisions against the current guideline and local policy.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
