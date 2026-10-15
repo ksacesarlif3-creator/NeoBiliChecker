@@ -62,19 +62,55 @@ jobs:
       - name: Run unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Build unsigned release APK
+        run: gradle :app:assembleRelease --stacktrace
 
-      - name: Upload installable APK
+      - name: Sign and verify release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          KEYSTORE="$RUNNER_TEMP/neobili-release.jks"
+          KEY_PASS="$(openssl rand -hex 24)"
+          UNSIGNED_APK="$(find app/build/outputs/apk/release -type f -name '*unsigned*.apk' | head -n 1)"
+          if [ -z "$UNSIGNED_APK" ]; then
+            echo "Unsigned release APK not found"
+            find app/build/outputs/apk/release -maxdepth 1 -type f -print || true
+            exit 1
+          fi
+          ALIGNED_APK="$RUNNER_TEMP/NeoBiliChecker-offline-release-aligned.apk"
+          FINAL_APK="app/build/outputs/apk/release/NeoBiliChecker-offline-v0.2.1-release.apk"
+          keytool -genkeypair \
+            -keystore "$KEYSTORE" \
+            -storepass "$KEY_PASS" \
+            -keypass "$KEY_PASS" \
+            -alias neobili \
+            -keyalg RSA \
+            -keysize 4096 \
+            -validity 3650 \
+            -dname "CN=NeoBili Checker Offline Release, OU=Clinical Reference, O=NeoBili, C=SA"
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias neobili \
+            --ks-pass "pass:$KEY_PASS" \
+            --key-pass "pass:$KEY_PASS" \
+            --out "$FINAL_APK" \
+            "$ALIGNED_APK"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$FINAL_APK"
+          "$BUILD_TOOLS/zipalign" -c -v 4 "$FINAL_APK"
+          sha256sum "$FINAL_APK" | tee "$RUNNER_TEMP/release-sha256.txt"
+
+      - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: NeoBiliChecker-offline-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: NeoBiliChecker-offline-signed-release
+          path: app/build/outputs/apk/release/NeoBiliChecker-offline-v0.2.1-release.apk
           if-no-files-found: error
 
-      - name: Upload generated threshold source
+      - name: Upload release SHA-256
         uses: actions/upload-artifact@v4
         with:
-          name: NeoBiliChecker-offline-threshold-source
-          path: app/src/main/java/com/neobili/checker/OfflineThresholdData.kt
+          name: NeoBiliChecker-offline-release-sha256
+          path: ${{ runner.temp }}/release-sha256.txt
           if-no-files-found: error
