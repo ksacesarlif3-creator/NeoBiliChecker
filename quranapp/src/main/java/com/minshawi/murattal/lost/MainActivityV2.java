@@ -8,7 +8,6 @@ import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -31,33 +30,20 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class MainActivityV2 extends Activity {
-    private static final String ARCHIVE_ITEM = "a00ssssss260908ddd";
-    private static final String METADATA_URL = "https://archive.org/metadata/" + ARCHIVE_ITEM;
-    private static final String DOWNLOAD_BASE = "https://archive.org/download/" + ARCHIVE_ITEM + "/";
-
     private static final int GREEN = Color.rgb(12, 59, 50);
     private static final int GREEN_2 = Color.rgb(19, 78, 66);
     private static final int GOLD = Color.rgb(182, 144, 59);
@@ -68,14 +54,15 @@ public class MainActivityV2 extends Activity {
 
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final String[] streamUrls = new String[114];
     private final boolean[] downloading = new boolean[114];
 
     private FrameLayout screenHost;
     private LinearLayout listScreen;
     private LinearLayout readerScreen;
+    private LinearLayout ruqyahScreen;
     private LinearLayout listContainer;
     private LinearLayout readerBody;
+    private LinearLayout ruqyahBody;
     private ScrollView readerScroll;
     private TextView statusText;
     private TextView nowPlayingText;
@@ -83,6 +70,7 @@ public class MainActivityV2 extends Activity {
     private TextView durationText;
     private TextView readerTitle;
     private TextView readerInfo;
+    private TextView ruqyahStatus;
     private Button bottomPlayButton;
     private Button speedButton;
     private Button readerToggleButton;
@@ -100,12 +88,20 @@ public class MainActivityV2 extends Activity {
     private QuranSyncData syncData;
     private boolean syncLoading = true;
     private boolean readerVisible = false;
+    private boolean ruqyahVisible = false;
+    private boolean readerReturnToRuqyah = false;
     private int readerSurahIndex = 0;
     private int renderedSurahIndex = -1;
     private final Map<String, RenderedText> renderedTexts = new HashMap<>();
     private String highlightedKey = null;
     private int highlightedWord = -1;
     private int highlightedAyah = -1;
+
+    private boolean ruqyahActive = false;
+    private int ruqyahSegmentIndex = -1;
+    private int ruqyahRepeatIndex = 0;
+    private int ruqyahStopMs = -1;
+    private boolean ruqyahSingleBlock = false;
 
     private final String[] surahs = new String[]{
             "الفاتحة","البقرة","آل عمران","النساء","المائدة","الأنعام","الأعراف","الأنفال","التوبة","يونس",
@@ -120,6 +116,35 @@ public class MainActivityV2 extends Activity {
             "الشمس","الليل","الضحى","الشرح","التين","العلق","القدر","البينة","الزلزلة","العاديات",
             "القارعة","التكاثر","العصر","الهمزة","الفيل","قريش","الماعون","الكوثر","الكافرون","النصر",
             "المسد","الإخلاص","الفلق","الناس"
+    };
+
+    private static final class RuqyahSegment {
+        final String title;
+        final int surah;
+        final int startAyah;
+        final int endAyah;
+        final int repeats;
+
+        RuqyahSegment(String title, int surah, int startAyah, int endAyah, int repeats) {
+            this.title = title;
+            this.surah = surah;
+            this.startAyah = startAyah;
+            this.endAyah = endAyah;
+            this.repeats = repeats;
+        }
+    }
+
+    private final RuqyahSegment[] ruqyahPlan = new RuqyahSegment[]{
+            new RuqyahSegment("سورة الفاتحة", 1, 1, 7, 7),
+            new RuqyahSegment("آية الكرسي", 2, 255, 255, 1),
+            new RuqyahSegment("خواتيم سورة البقرة", 2, 285, 286, 1),
+            new RuqyahSegment("آيات السحر من سورة الأعراف", 7, 117, 122, 1),
+            new RuqyahSegment("آيات السحر من سورة يونس", 10, 81, 82, 1),
+            new RuqyahSegment("آية السحر من سورة طه", 20, 69, 69, 1),
+            new RuqyahSegment("سورة الكافرون", 109, 1, 6, 1),
+            new RuqyahSegment("سورة الإخلاص", 112, 1, 4, 3),
+            new RuqyahSegment("سورة الفلق", 113, 1, 5, 3),
+            new RuqyahSegment("سورة الناس", 114, 1, 6, 3)
     };
 
     private static final class RenderedText {
@@ -168,10 +193,8 @@ public class MainActivityV2 extends Activity {
         getWindow().setStatusBarColor(GREEN);
         getWindow().setNavigationBarColor(GREEN);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-        loadCachedUrls();
         buildUi();
         loadSyncAssets();
-        refreshArchiveIndex();
         mainHandler.post(progressTicker);
     }
 
@@ -185,9 +208,12 @@ public class MainActivityV2 extends Activity {
         screenHost = new FrameLayout(this);
         listScreen = buildListScreen();
         readerScreen = buildReaderScreen();
+        ruqyahScreen = buildRuqyahScreen();
         readerScreen.setVisibility(View.GONE);
+        ruqyahScreen.setVisibility(View.GONE);
         screenHost.addView(listScreen, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         screenHost.addView(readerScreen, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        screenHost.addView(ruqyahScreen, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(screenHost, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         root.addView(buildPlayerPanel());
         setContentView(root);
@@ -198,7 +224,7 @@ public class MainActivityV2 extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
         header.setGravity(Gravity.CENTER);
-        header.setPadding(dp(18), dp(18), dp(18), dp(14));
+        header.setPadding(dp(18), dp(16), dp(18), dp(12));
         header.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{GREEN, GREEN_2}));
 
         TextView ornament = new TextView(this);
@@ -214,11 +240,11 @@ public class MainActivityV2 extends Activity {
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(23);
         title.setGravity(Gravity.CENTER);
-        title.setPadding(0, dp(9), 0, dp(4));
+        title.setPadding(0, dp(8), 0, dp(3));
         header.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("الختمة الإذاعية الثانية • نص عثماني • تزامن كلمة بكلمة");
+        subtitle.setText("الختمة الإذاعية الثانية • مصحف عثماني • رقية شرعية قرآنية");
         subtitle.setTextColor(Color.rgb(234, 226, 200));
         subtitle.setTextSize(12);
         subtitle.setGravity(Gravity.CENTER);
@@ -245,14 +271,26 @@ public class MainActivityV2 extends Activity {
         searchBox.setBackground(rounded(Color.WHITE, dp(16), Color.rgb(225, 219, 199), dp(1)));
         tools.addView(searchBox, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.setGravity(Gravity.CENTER_VERTICAL);
-        buttons.setPadding(0, dp(8), 0, 0);
+        LinearLayout topButtons = new LinearLayout(this);
+        topButtons.setOrientation(LinearLayout.HORIZONTAL);
+        topButtons.setGravity(Gravity.CENTER);
+        topButtons.setPadding(0, dp(8), 0, 0);
 
         Button mushaf = smallButton("📖 فتح المصحف", true);
         mushaf.setOnClickListener(v -> showReader(currentIndex >= 0 ? currentIndex : 0));
-        buttons.addView(mushaf);
+        topButtons.addView(mushaf, new LinearLayout.LayoutParams(0, dp(42), 1f));
+
+        Button ruqyah = smallButton("🕊 الرقية الشرعية", true);
+        ruqyah.setOnClickListener(v -> showRuqyah());
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        rlp.setMarginStart(dp(7));
+        topButtons.addView(ruqyah, rlp);
+        tools.addView(topButtons);
+
+        LinearLayout secondary = new LinearLayout(this);
+        secondary.setOrientation(LinearLayout.HORIZONTAL);
+        secondary.setGravity(Gravity.CENTER_VERTICAL);
+        secondary.setPadding(0, dp(7), 0, 0);
 
         lostFilterButton = smallButton("المقاطع المعادة فقط", false);
         lostFilterButton.setOnClickListener(v -> {
@@ -260,16 +298,14 @@ public class MainActivityV2 extends Activity {
             lostFilterButton.setText(lostOnly ? "عرض كل السور" : "المقاطع المعادة فقط");
             rebuildList();
         });
-        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        flp.setMarginStart(dp(7));
-        buttons.addView(lostFilterButton, flp);
+        secondary.addView(lostFilterButton);
 
         Button info = smallButton("عن النسخة", false);
         info.setOnClickListener(v -> showAbout());
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
         ilp.setMarginStart(dp(7));
-        buttons.addView(info, ilp);
-        tools.addView(buttons);
+        secondary.addView(info, ilp);
+        tools.addView(secondary);
 
         statusText = new TextView(this);
         statusText.setText("يتم تجهيز نص المصحف وتوقيت الكلمات داخل التطبيق…");
@@ -306,17 +342,17 @@ public class MainActivityV2 extends Activity {
 
         LinearLayout nav = new LinearLayout(this);
         nav.setGravity(Gravity.CENTER_VERTICAL);
-        Button back = smallButton("قائمة السور", false);
+        Button back = smallButton("رجوع", false);
         back.setOnClickListener(v -> hideReader());
         nav.addView(back);
         Button prev = smallButton("السورة السابقة", true);
         prev.setOnClickListener(v -> renderReader((readerSurahIndex + 113) % 114, true));
-        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
         np.setMarginStart(dp(6));
         nav.addView(prev, np);
         Button next = smallButton("السورة التالية", true);
         next.setOnClickListener(v -> renderReader((readerSurahIndex + 1) % 114, true));
-        LinearLayout.LayoutParams nn = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams nn = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
         nn.setMarginStart(dp(6));
         nav.addView(next, nn);
         top.addView(nav);
@@ -346,6 +382,71 @@ public class MainActivityV2 extends Activity {
         return screen;
     }
 
+    private LinearLayout buildRuqyahScreen() {
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        screen.setBackgroundColor(CREAM);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.VERTICAL);
+        top.setPadding(dp(14), dp(9), dp(14), dp(9));
+        top.setBackgroundColor(Color.rgb(239, 232, 209));
+
+        LinearLayout nav = new LinearLayout(this);
+        nav.setGravity(Gravity.CENTER_VERTICAL);
+        Button back = smallButton("قائمة السور", false);
+        back.setOnClickListener(v -> hideRuqyah());
+        nav.addView(back);
+
+        Button playAll = smallButton("▶ تشغيل الرقية كاملة", true);
+        playAll.setOnClickListener(v -> startRuqyah(0, false));
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        pp.setMarginStart(dp(7));
+        nav.addView(playAll, pp);
+
+        Button stop = smallButton("■ إيقاف", false);
+        stop.setOnClickListener(v -> stopRuqyah(true));
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        sp.setMarginStart(dp(7));
+        nav.addView(stop, sp);
+        top.addView(nav);
+
+        TextView title = new TextView(this);
+        title.setText("الرقية الشرعية القرآنية");
+        title.setTextColor(GREEN);
+        title.setTextSize(22);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(0, dp(8), 0, dp(3));
+        top.addView(title);
+
+        TextView note = new TextView(this);
+        note.setText("بتلاوة الشيخ محمد صديق المنشاوي المرتلة. الترتيب أدناه تنظيم تطبيقي لآيات وسور تُقرأ في الرقية، وليس ادعاءً أن هذا التسلسل المحدد ورد كورد نبوي ثابت.");
+        note.setTextColor(MUTED);
+        note.setTextSize(11);
+        note.setGravity(Gravity.CENTER);
+        note.setTextDirection(View.TEXT_DIRECTION_RTL);
+        top.addView(note);
+
+        ruqyahStatus = new TextView(this);
+        ruqyahStatus.setText("يمكن تشغيل الرقية كاملة أو اختيار مقطع بعينه.");
+        ruqyahStatus.setTextColor(GOLD);
+        ruqyahStatus.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        ruqyahStatus.setTextSize(12);
+        ruqyahStatus.setGravity(Gravity.CENTER);
+        ruqyahStatus.setPadding(0, dp(6), 0, 0);
+        top.addView(ruqyahStatus);
+        screen.addView(top);
+
+        ScrollView scroll = new ScrollView(this);
+        ruqyahBody = new LinearLayout(this);
+        ruqyahBody.setOrientation(LinearLayout.VERTICAL);
+        ruqyahBody.setPadding(dp(12), dp(8), dp(12), dp(24));
+        scroll.addView(ruqyahBody, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        screen.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        return screen;
+    }
+
     private View buildPlayerPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -355,7 +456,7 @@ public class MainActivityV2 extends Activity {
         LinearLayout first = new LinearLayout(this);
         first.setGravity(Gravity.CENTER_VERTICAL);
         nowPlayingText = new TextView(this);
-        nowPlayingText.setText("اختر سورة للاستماع");
+        nowPlayingText.setText("اختر سورة أو افتح الرقية الشرعية");
         nowPlayingText.setTextColor(Color.WHITE);
         nowPlayingText.setTextSize(13);
         nowPlayingText.setMaxLines(1);
@@ -407,7 +508,8 @@ public class MainActivityV2 extends Activity {
         controls.addView(next);
         readerToggleButton = smallButton("📖 متابعة النص", true);
         readerToggleButton.setOnClickListener(v -> {
-            if (readerVisible) hideReader(); else showReader(currentIndex >= 0 ? currentIndex : readerSurahIndex);
+            if (readerVisible) hideReader();
+            else showReader(currentIndex >= 0 ? currentIndex : readerSurahIndex);
         });
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
         rlp.setMarginStart(dp(10));
@@ -519,11 +621,13 @@ public class MainActivityV2 extends Activity {
                     syncLoading = false;
                     if (statusText != null) statusText.setText("نص المصحف وتوقيت الكلمات جاهزان • ٦٠٤ صفحة • يعملان أوفلاين");
                     if (readerVisible) renderReader(readerSurahIndex, false);
+                    if (ruqyahVisible) renderRuqyah();
                 });
             } catch (Exception e) {
                 mainHandler.post(() -> {
                     syncLoading = false;
                     if (statusText != null) statusText.setText("تعذر تحميل بيانات المصحف المدمجة. أعد تثبيت التطبيق إن استمر الخلل.");
+                    if (ruqyahStatus != null) ruqyahStatus.setText("تعذر تحميل بيانات المصحف والتوقيت.");
                     Toast.makeText(this, "تعذر تحميل نص المصحف أو توقيت الكلمات", Toast.LENGTH_LONG).show();
                 });
             }
@@ -531,18 +635,48 @@ public class MainActivityV2 extends Activity {
     }
 
     private void showReader(int index) {
+        readerReturnToRuqyah = ruqyahVisible;
         readerVisible = true;
+        ruqyahVisible = false;
         listScreen.setVisibility(View.GONE);
+        ruqyahScreen.setVisibility(View.GONE);
         readerScreen.setVisibility(View.VISIBLE);
-        readerToggleButton.setText("قائمة السور");
+        readerToggleButton.setText("رجوع");
         renderReader(Math.max(0, Math.min(113, index)), false);
     }
 
     private void hideReader() {
         readerVisible = false;
         readerScreen.setVisibility(View.GONE);
-        listScreen.setVisibility(View.VISIBLE);
+        if (readerReturnToRuqyah) {
+            ruqyahVisible = true;
+            ruqyahScreen.setVisibility(View.VISIBLE);
+            listScreen.setVisibility(View.GONE);
+            renderRuqyah();
+        } else {
+            ruqyahVisible = false;
+            ruqyahScreen.setVisibility(View.GONE);
+            listScreen.setVisibility(View.VISIBLE);
+        }
+        readerReturnToRuqyah = false;
         readerToggleButton.setText("📖 متابعة النص");
+    }
+
+    private void showRuqyah() {
+        readerVisible = false;
+        ruqyahVisible = true;
+        readerScreen.setVisibility(View.GONE);
+        listScreen.setVisibility(View.GONE);
+        ruqyahScreen.setVisibility(View.VISIBLE);
+        readerToggleButton.setText("📖 متابعة النص");
+        renderRuqyah();
+    }
+
+    private void hideRuqyah() {
+        ruqyahVisible = false;
+        ruqyahScreen.setVisibility(View.GONE);
+        readerScreen.setVisibility(View.GONE);
+        listScreen.setVisibility(View.VISIBLE);
     }
 
     private void renderReader(int index, boolean fromNavigation) {
@@ -556,7 +690,7 @@ public class MainActivityV2 extends Activity {
         readerBody.removeAllViews();
 
         if (syncLoading || syncData == null) {
-            TextView wait = readerMessage("جاري تحميل نص مصحف المدينة وتوقيت الكلمات…", 17, MUTED);
+            TextView wait = readerMessage("جاري تحميل نص المصحف وتوقيت الكلمات…", 17, MUTED);
             readerBody.addView(wait);
             readerInfo.setText("البيانات مدمجة داخل التطبيق");
             return;
@@ -617,6 +751,101 @@ public class MainActivityV2 extends Activity {
         }
     }
 
+    private void renderRuqyah() {
+        if (ruqyahBody == null) return;
+        ruqyahBody.removeAllViews();
+        if (syncLoading || syncData == null) {
+            TextView wait = readerMessage("جاري تجهيز نص الرقية وتوقيت التلاوة…", 16, MUTED);
+            wait.setGravity(Gravity.CENTER);
+            ruqyahBody.addView(wait);
+            return;
+        }
+
+        if (ruqyahActive && ruqyahSegmentIndex >= 0 && ruqyahSegmentIndex < ruqyahPlan.length) {
+            RuqyahSegment s = ruqyahPlan[ruqyahSegmentIndex];
+            ruqyahStatus.setText("الآن: " + s.title + " • التكرار " + toArabicDigits(ruqyahRepeatIndex + 1) + " من " + toArabicDigits(s.repeats));
+        } else {
+            ruqyahStatus.setText("يمكن تشغيل الرقية كاملة أو اختيار مقطع بعينه.");
+        }
+
+        for (int i = 0; i < ruqyahPlan.length; i++) ruqyahBody.addView(buildRuqyahCard(i));
+
+        TextView footer = readerMessage("الاستماع للتسجيل وسيلة مساعدة؛ والرقية تكون بالقراءة والدعاء والنفث مع التوكل على الله، ولا تُعد بديلًا عن الرعاية الطبية عند الحاجة.", 11, MUTED);
+        footer.setGravity(Gravity.CENTER);
+        footer.setPadding(dp(8), dp(12), dp(8), dp(8));
+        ruqyahBody.addView(footer);
+    }
+
+    private View buildRuqyahCard(int index) {
+        RuqyahSegment s = ruqyahPlan[index];
+        boolean active = ruqyahActive && index == ruqyahSegmentIndex;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(rounded(active ? Color.rgb(255, 248, 218) : Color.WHITE, dp(16), active ? GOLD : Color.rgb(230, 224, 204), active ? dp(2) : dp(1)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, dp(4), 0, dp(4));
+        card.setLayoutParams(lp);
+
+        TextView title = new TextView(this);
+        title.setText((active ? "● " : "") + s.title);
+        title.setTextColor(active ? GREEN : INK);
+        title.setTextSize(17);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        card.addView(title);
+
+        TextView meta = new TextView(this);
+        meta.setText(segmentReference(s) + (s.repeats > 1 ? " • تكرار ×" + toArabicDigits(s.repeats) : " • مرة واحدة"));
+        meta.setTextColor(GOLD);
+        meta.setTextSize(11);
+        card.addView(meta);
+
+        TextView quran = new TextView(this);
+        quran.setText(segmentText(s));
+        quran.setTextColor(INK);
+        quran.setTextSize(18);
+        quran.setTextDirection(View.TEXT_DIRECTION_RTL);
+        quran.setGravity(Gravity.RIGHT);
+        quran.setLineSpacing(dp(3), 1.12f);
+        quran.setPadding(0, dp(6), 0, dp(7));
+        card.addView(quran);
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setGravity(Gravity.CENTER_VERTICAL);
+        Button play = smallButton("▶ تشغيل المقطع", true);
+        play.setOnClickListener(v -> startRuqyah(index, true));
+        buttons.addView(play, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        Button read = smallButton("📖 عرض في المصحف", false);
+        read.setOnClickListener(v -> {
+            showReader(s.surah - 1);
+            mainHandler.postDelayed(() -> seekToAyah(s.surah - 1, s.startAyah), 120);
+        });
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        rp.setMarginStart(dp(7));
+        buttons.addView(read, rp);
+        card.addView(buttons);
+        return card;
+    }
+
+    private String segmentReference(RuqyahSegment s) {
+        String ayah = s.startAyah == s.endAyah
+                ? toArabicDigits(s.startAyah)
+                : toArabicDigits(s.startAyah) + "–" + toArabicDigits(s.endAyah);
+        return "سورة " + surahs[s.surah - 1] + " • الآية " + ayah;
+    }
+
+    private String segmentText(RuqyahSegment s) {
+        if (syncData == null) return "";
+        StringBuilder out = new StringBuilder();
+        for (int a = s.startAyah; a <= s.endAyah; a++) {
+            String t = syncData.getAyahText(s.surah, a);
+            if (t.isEmpty()) continue;
+            if (out.length() > 0) out.append(' ');
+            out.append(t).append(" ﴿").append(toArabicDigits(a)).append("﴾");
+        }
+        return out.toString();
+    }
+
     private void addSpecialReaderLine(String key, String text, boolean gold) {
         TextView v = new TextView(this);
         v.setText(text);
@@ -650,7 +879,7 @@ public class MainActivityV2 extends Activity {
         int ms = syncData.firstWordStartMs(surahIndex + 1, ayah);
         if (ms < 0) return;
         if (currentIndex != surahIndex || mediaPlayer == null) {
-            playSurah(surahIndex, ms);
+            playSurah(surahIndex, ms, false);
         } else if (!preparing) {
             try {
                 mediaPlayer.seekTo(ms);
@@ -674,7 +903,6 @@ public class MainActivityV2 extends Activity {
 
         QuranSyncData.WordMoment active = null;
         if (candidate >= 0) {
-            // Walk backwards a few entries in case a reviewed occurrence overlaps a boundary.
             for (int i = candidate; i >= Math.max(0, candidate - 4); i--) {
                 QuranSyncData.WordMoment m = list.get(i);
                 if (positionMs >= m.startMs && positionMs <= m.endMs) { active = m; break; }
@@ -715,15 +943,106 @@ public class MainActivityV2 extends Activity {
         highlightedWord = -1;
     }
 
-    private void playSurah(int index) { playSurah(index, -1); }
+    private void startRuqyah(int segmentIndex, boolean singleBlock) {
+        if (syncData == null || syncLoading) {
+            Toast.makeText(this, "بيانات المصحف ما زالت تُجهز", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (segmentIndex < 0 || segmentIndex >= ruqyahPlan.length) return;
+        ruqyahActive = true;
+        ruqyahSingleBlock = singleBlock;
+        ruqyahSegmentIndex = segmentIndex;
+        ruqyahRepeatIndex = 0;
+        playCurrentRuqyahSegment();
+    }
 
-    private void playSurah(int index, int initialSeekMs) {
+    private void playCurrentRuqyahSegment() {
+        if (!ruqyahActive || syncData == null || ruqyahSegmentIndex < 0 || ruqyahSegmentIndex >= ruqyahPlan.length) return;
+        RuqyahSegment s = ruqyahPlan[ruqyahSegmentIndex];
+        int start = syncData.firstWordStartMs(s.surah, s.startAyah);
+        int end = syncData.lastWordEndMs(s.surah, s.endAyah);
+        if (start < 0 || end <= start) {
+            advanceRuqyah();
+            return;
+        }
+        ruqyahStopMs = end + 180;
+        playSurah(s.surah - 1, start, true);
+        nowPlayingText.setText("الرقية • " + s.title + " • " + toArabicDigits(ruqyahRepeatIndex + 1) + "/" + toArabicDigits(s.repeats));
+        if (ruqyahVisible) renderRuqyah();
+    }
+
+    private void advanceRuqyah() {
+        if (!ruqyahActive || ruqyahSegmentIndex < 0 || ruqyahSegmentIndex >= ruqyahPlan.length) return;
+        ruqyahStopMs = -1;
+        RuqyahSegment current = ruqyahPlan[ruqyahSegmentIndex];
+        if (ruqyahRepeatIndex + 1 < current.repeats) {
+            ruqyahRepeatIndex++;
+            int start = syncData == null ? -1 : syncData.firstWordStartMs(current.surah, current.startAyah);
+            int end = syncData == null ? -1 : syncData.lastWordEndMs(current.surah, current.endAyah);
+            if (start >= 0 && end > start && mediaPlayer != null && !preparing && currentIndex == current.surah - 1) {
+                try {
+                    ruqyahStopMs = end + 180;
+                    mediaPlayer.seekTo(start);
+                    mediaPlayer.start();
+                    applyPlaybackSpeed(mediaPlayer);
+                    bottomPlayButton.setText("❚❚");
+                    nowPlayingText.setText("الرقية • " + current.title + " • " + toArabicDigits(ruqyahRepeatIndex + 1) + "/" + toArabicDigits(current.repeats));
+                    if (ruqyahVisible) renderRuqyah();
+                    return;
+                } catch (Exception ignored) {}
+            }
+            playCurrentRuqyahSegment();
+            return;
+        }
+
+        if (ruqyahSingleBlock || ruqyahSegmentIndex >= ruqyahPlan.length - 1) {
+            stopRuqyah(false);
+            return;
+        }
+
+        ruqyahSegmentIndex++;
+        ruqyahRepeatIndex = 0;
+        playCurrentRuqyahSegment();
+    }
+
+    private void stopRuqyah(boolean manual) {
+        boolean wasActive = ruqyahActive;
+        ruqyahActive = false;
+        ruqyahStopMs = -1;
+        ruqyahSegmentIndex = -1;
+        ruqyahRepeatIndex = 0;
+        ruqyahSingleBlock = false;
+        if (mediaPlayer != null && !preparing) {
+            try { if (mediaPlayer.isPlaying()) mediaPlayer.pause(); } catch (Exception ignored) {}
+        }
+        bottomPlayButton.setText("▶");
+        if (wasActive) {
+            nowPlayingText.setText(manual ? "تم إيقاف الرقية الشرعية" : "اكتملت الرقية الشرعية");
+            if (ruqyahStatus != null) ruqyahStatus.setText(manual ? "تم إيقاف الرقية." : "اكتملت الرقية بحمد الله.");
+            if (ruqyahVisible) renderRuqyah();
+        }
+    }
+
+    private void playSurah(int index) { playSurah(index, -1, false); }
+
+    private void playSurah(int index, int initialSeekMs, boolean fromRuqyah) {
         if (index < 0 || index >= 114) return;
-        if (currentIndex == index && mediaPlayer != null && !preparing && initialSeekMs < 0) {
-            try {
-                if (mediaPlayer.isPlaying()) { mediaPlayer.pause(); bottomPlayButton.setText("▶"); }
-                else { mediaPlayer.start(); applyPlaybackSpeed(mediaPlayer); bottomPlayButton.setText("❚❚"); }
-            } catch (Exception ignored) {}
+        if (syncData == null) {
+            if (statusText != null) statusText.setText("جاري تجهيز مصدر التلاوة المتزامن…");
+            Toast.makeText(this, "بيانات التزامن تُجهز الآن، أعد المحاولة بعد لحظة", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (!fromRuqyah) {
+            ruqyahActive = false;
+            ruqyahStopMs = -1;
+            ruqyahSegmentIndex = -1;
+            ruqyahRepeatIndex = 0;
+            ruqyahSingleBlock = false;
+        }
+
+        if (!fromRuqyah && currentIndex == index && mediaPlayer != null && !preparing && initialSeekMs < 0) {
+            toggleCurrent();
             rebuildList();
             return;
         }
@@ -732,7 +1051,11 @@ public class MainActivityV2 extends Activity {
         if (readerVisible) renderReader(index, false);
         File local = audioFile(index);
         String source = local.exists() ? local.getAbsolutePath() : getStreamUrl(index);
-        nowPlayingText.setText("سورة " + surahs[index] + (local.exists() ? " • أوفلاين" : " • بث مباشر"));
+        if (source == null || source.isEmpty()) {
+            Toast.makeText(this, "تعذر تحديد مصدر التلاوة", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!fromRuqyah) nowPlayingText.setText("سورة " + surahs[index] + (local.exists() ? " • أوفلاين" : " • المصدر المتزامن"));
         bottomPlayButton.setText("…");
         preparing = true;
         seekBar.setEnabled(false);
@@ -754,19 +1077,22 @@ public class MainActivityV2 extends Activity {
             mp.start();
             applyPlaybackSpeed(mp);
             bottomPlayButton.setText("❚❚");
-            statusText.setText(local.exists() ? "تشغيل أوفلاين • التزامن كلمة بكلمة يعمل من البيانات المدمجة" : "تشغيل من نسخة الإذاعة 2026 • التزامن كلمة بكلمة مفعّل");
+            if (statusText != null) statusText.setText(local.exists()
+                    ? "تشغيل أوفلاين • التزامن كلمة بكلمة يعمل من البيانات المدمجة"
+                    : "تشغيل من المصدر الأصلي المطابق لتوقيت الكلمات • التزامن الدقيق مفعّل");
             rebuildList();
         });
         mediaPlayer.setOnCompletionListener(mp -> {
             bottomPlayButton.setText("▶");
             clearHighlight();
-            if (currentIndex < 113) playSurah(currentIndex + 1);
+            if (ruqyahActive) advanceRuqyah();
+            else if (currentIndex < 113) playSurah(currentIndex + 1);
         });
         mediaPlayer.setOnErrorListener((mp, what, extra) -> {
             preparing = false;
             bottomPlayButton.setText("▶");
             seekBar.setEnabled(false);
-            statusText.setText("تعذر تشغيل هذه السورة من المصدر. أعد المحاولة بعد التحقق من الاتصال.");
+            if (statusText != null) statusText.setText("تعذر تشغيل هذه السورة من المصدر. أعد المحاولة بعد التحقق من الاتصال.");
             Toast.makeText(this, "تعذر تشغيل سورة " + surahs[index], Toast.LENGTH_LONG).show();
             return true;
         });
@@ -776,7 +1102,7 @@ public class MainActivityV2 extends Activity {
         } catch (Exception e) {
             preparing = false;
             bottomPlayButton.setText("▶");
-            statusText.setText("تعذر فتح ملف التلاوة.");
+            if (statusText != null) statusText.setText("تعذر فتح ملف التلاوة.");
         }
     }
 
@@ -821,10 +1147,30 @@ public class MainActivityV2 extends Activity {
 
     private void toggleCurrent() {
         if (currentIndex < 0) { playSurah(0); return; }
-        if (!preparing) playSurah(currentIndex);
+        if (mediaPlayer == null || preparing) return;
+        try {
+            if (mediaPlayer.isPlaying()) {
+                mediaPlayer.pause();
+                bottomPlayButton.setText("▶");
+            } else {
+                mediaPlayer.start();
+                applyPlaybackSpeed(mediaPlayer);
+                bottomPlayButton.setText("❚❚");
+            }
+        } catch (Exception ignored) {}
+        rebuildList();
     }
 
     private void playRelative(int delta) {
+        if (ruqyahActive && ruqyahSegmentIndex >= 0) {
+            int next = ruqyahSegmentIndex + delta;
+            if (next < 0) next = 0;
+            if (next >= ruqyahPlan.length) next = ruqyahPlan.length - 1;
+            ruqyahSegmentIndex = next;
+            ruqyahRepeatIndex = 0;
+            playCurrentRuqyahSegment();
+            return;
+        }
         if (currentIndex < 0) { playSurah(delta > 0 ? 0 : 113); return; }
         int next = currentIndex + delta;
         if (next < 0) next = 113;
@@ -845,6 +1191,9 @@ public class MainActivityV2 extends Activity {
                         durationText.setText(formatTime(dur));
                     }
                     updateWordHighlight(pos);
+                    if (ruqyahActive && ruqyahStopMs > 0 && pos >= ruqyahStopMs) {
+                        advanceRuqyah();
+                    }
                 } catch (Exception ignored) {}
             }
             mainHandler.postDelayed(this, 90);
@@ -861,6 +1210,10 @@ public class MainActivityV2 extends Activity {
     }
 
     private void downloadSurah(int index, Button button) {
+        if (syncData == null) {
+            Toast.makeText(this, "بيانات مصدر الصوت ما زالت تُجهز", Toast.LENGTH_SHORT).show();
+            return;
+        }
         downloading[index] = true;
         updateDownloadButton(button, index);
         statusText.setText("جاري تنزيل سورة " + surahs[index] + " داخل التطبيق…");
@@ -870,11 +1223,13 @@ public class MainActivityV2 extends Activity {
             HttpURLConnection c = null;
             try {
                 if (!out.getParentFile().exists() && !out.getParentFile().mkdirs()) throw new Exception("Cannot create directory");
-                c = (HttpURLConnection) new URL(getStreamUrl(index)).openConnection();
+                String url = getStreamUrl(index);
+                if (url == null) throw new Exception("No audio URL");
+                c = (HttpURLConnection) new URL(url).openConnection();
                 c.setInstanceFollowRedirects(true);
                 c.setConnectTimeout(20000);
                 c.setReadTimeout(45000);
-                c.setRequestProperty("User-Agent", "AlMinshawiMurattal/1.1 Android");
+                c.setRequestProperty("User-Agent", "AlMinshawiMurattal/1.2 Android");
                 c.connect();
                 int code = c.getResponseCode();
                 if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
@@ -933,107 +1288,25 @@ public class MainActivityV2 extends Activity {
     }
 
     private void showAbout() {
+        String message = "التطبيق مخصص للختمة الإذاعية الثانية المرتلة للشيخ محمد صديق المنشاوي، المعروفة حديثًا بالمصحف المرتل المفقود.\n\n"
+                + "الإصدار 1.2 يضيف قسم الرقية الشرعية القرآنية بصوت الشيخ المنشاوي، مع تشغيل متتابع وتكرار آلي للمقاطع المختارة، مع استمرار التحكم في السرعة وشريط الزمن ومتابعة النص.\n\n"
+                + "الرقية المضمنة تشمل: الفاتحة، آية الكرسي، خواتيم البقرة، آيات السحر من الأعراف ويونس وطه، الكافرون، الإخلاص، الفلق، والناس. ترتيب القائمة تنظيم تطبيقي ولا يُقصد به أن هذا التسلسل المحدد ورد كورد نبوي ثابت.\n\n"
+                + "النص عثماني برواية حفص مع تقسيم صفحات مصحف المدينة 1–604، وتوقيت الكلمات متزامن مع التسجيل الأصلي للختمة الجديدة/الثانية.\n\n"
+                + "الاستماع للرقية المسجلة وسيلة مساعدة، ولا يغني عن قراءة الإنسان ورقيته لنفسه والدعاء، ولا عن التقييم الطبي عند الحاجة.";
         new AlertDialog.Builder(this)
                 .setTitle("عن هذه النسخة")
-                .setMessage("التطبيق مخصص للختمة الإذاعية الثانية المرتلة للشيخ محمد صديق المنشاوي، المعروفة حديثًا بالمصحف المرتل المفقود.\n\nالإصدار 1.1 يضيف:\n• التحكم في سرعة التشغيل من 0.75× إلى 2× مع ثبات طبقة الصوت.\n• شريطًا للتحريك داخل مدة السورة.\n• نصًا عثمانيًا لمصحف المدينة النبوية برواية حفص مع تقسيم الصفحات 1–604.\n• إضاءة الكلمة المطابقة للصوت اعتمادًا على توقيتات كلمة بكلمة للختمة الجديدة 1967.\n\nملاحظة: عرض النص داخل التطبيق هو عرض رقمي للآيات بالرسم العثماني وتقسيم الصفحات، وليس صورة ممسوحة ضوئيًا للصفحة المطبوعة.\n\nمصدر الصوت: نسخة بث 2026 على Archive.org. توقيتات الكلمات: Qur’anic Universal Audio. النص والصفحات: بيانات مصحف المدينة النبوية/حفص.")
-                .setPositiveButton("حسنًا", null).show();
-    }
-
-    private void refreshArchiveIndex() {
-        executor.execute(() -> {
-            try {
-                HttpURLConnection c = (HttpURLConnection) new URL(METADATA_URL).openConnection();
-                c.setConnectTimeout(15000);
-                c.setReadTimeout(20000);
-                c.setRequestProperty("User-Agent", "AlMinshawiMurattal/1.1 Android");
-                c.connect();
-                if (c.getResponseCode() < 200 || c.getResponseCode() >= 300) throw new Exception("HTTP " + c.getResponseCode());
-                StringBuilder sb = new StringBuilder();
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = br.readLine()) != null) sb.append(line);
-                }
-                c.disconnect();
-                JSONArray files = new JSONObject(sb.toString()).optJSONArray("files");
-                if (files == null) throw new Exception("No files");
-                String[] bestName = new String[114];
-                int[] bestScore = new int[114];
-                for (int i = 0; i < files.length(); i++) {
-                    JSONObject f = files.optJSONObject(i);
-                    if (f == null) continue;
-                    String name = f.optString("name", "");
-                    if (!name.toLowerCase(Locale.ROOT).endsWith(".mp3")) continue;
-                    int track = extractTrack(f, name);
-                    if (track < 1 || track > 114) continue;
-                    int score = scoreCandidate(f, name, track);
-                    if (bestName[track - 1] == null || score > bestScore[track - 1]) {
-                        bestName[track - 1] = name;
-                        bestScore[track - 1] = score;
-                    }
-                }
-                int found = 0;
-                android.content.SharedPreferences.Editor editor = getSharedPreferences("audio_index", MODE_PRIVATE).edit();
-                for (int i = 0; i < 114; i++) {
-                    if (bestName[i] != null) {
-                        String u = DOWNLOAD_BASE + Uri.encode(bestName[i], "._-()[]");
-                        streamUrls[i] = u;
-                        editor.putString("url_" + (i + 1), u);
-                        found++;
-                    }
-                }
-                editor.apply();
-                int finalFound = found;
-                mainHandler.post(() -> {
-                    if (!syncLoading && statusText != null) {
-                        statusText.setText(finalFound == 114
-                                ? "تم ربط ١١٤ سورة • النص والتزامن جاهزان • يمكنك تنزيل أي سورة للأوفلاين"
-                                : "تم ربط المصدر جزئيًا؛ سيستخدم التطبيق الروابط المحفوظة عند الحاجة.");
-                    }
-                });
-            } catch (Exception ignored) {
-                mainHandler.post(() -> {
-                    if (!syncLoading && statusText != null) statusText.setText("نص المصحف والتزامن جاهزان؛ تعذر تحديث فهرس الصوت الآن.");
-                });
-            }
-        });
-    }
-
-    private void loadCachedUrls() {
-        android.content.SharedPreferences p = getSharedPreferences("audio_index", MODE_PRIVATE);
-        for (int i = 0; i < 114; i++) streamUrls[i] = p.getString("url_" + (i + 1), null);
-    }
-
-    private int extractTrack(JSONObject f, String name) {
-        Matcher mt = Pattern.compile("^(\\d{1,3})").matcher(f.optString("track", "").trim());
-        if (mt.find()) try { return Integer.parseInt(mt.group(1)); } catch (Exception ignored) {}
-        Matcher mn = Pattern.compile("^(\\d{1,3})(?:\\D|$)").matcher(name);
-        if (mn.find()) try { return Integer.parseInt(mn.group(1)); } catch (Exception ignored) {}
-        Matcher mtitle = Pattern.compile("^(\\d{1,3})(?:\\D|$)").matcher(f.optString("title", "").trim());
-        if (mtitle.find()) try { return Integer.parseInt(mtitle.group(1)); } catch (Exception ignored) {}
-        return -1;
-    }
-
-    private int scoreCandidate(JSONObject f, String name, int track) {
-        int score = 0;
-        String lower = name.toLowerCase(Locale.ROOT);
-        String fmt = f.optString("format", "").toLowerCase(Locale.ROOT);
-        String source = f.optString("source", "").toLowerCase(Locale.ROOT);
-        if (name.equals(String.format(Locale.US, "%03d.mp3", track))) score += 100;
-        if (lower.startsWith(String.format(Locale.US, "%03d", track))) score += 25;
-        if (source.equals("original")) score += 30;
-        if (fmt.contains("vbr mp3")) score += 20;
-        if (fmt.contains("mp3")) score += 10;
-        if (lower.contains("64kb")) score -= 15;
-        return score;
+                .setMessage(message)
+                .setPositiveButton("حسنًا", null)
+                .show();
     }
 
     private String getStreamUrl(int index) {
-        if (streamUrls[index] != null && !streamUrls[index].isEmpty()) return streamUrls[index];
-        return DOWNLOAD_BASE + String.format(Locale.US, "%03d.mp3", index + 1);
+        if (syncData == null) return null;
+        return syncData.exactAudioUrl(index + 1);
     }
 
     private File audioFile(int index) {
-        return new File(new File(getFilesDir(), "audio"), String.format(Locale.US, "%03d.mp3", index + 1));
+        return new File(new File(getFilesDir(), "audio_exact_v11"), String.format(Locale.US, "%03d.mp3", index + 1));
     }
 
     private boolean containsRerecordedMaterial(int n) {
@@ -1107,7 +1380,9 @@ public class MainActivityV2 extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (readerVisible) hideReader(); else super.onBackPressed();
+        if (readerVisible) hideReader();
+        else if (ruqyahVisible) hideRuqyah();
+        else super.onBackPressed();
     }
 
     @Override
