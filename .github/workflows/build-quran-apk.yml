@@ -30,6 +30,54 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
+      - name: Prepare Mushaf and exact Minshawi 1967 word timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSETS="quranapp/src/main/assets"
+          mkdir -p "$ASSETS" "$RUNNER_TEMP/minshawi_sync"
+
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/minshawi_sync/qua.zip" \
+            https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
+          unzip -p "$RUNNER_TEMP/minshawi_sync/qua.zip" word_timestamps.json.gz > "$ASSETS/minshawi_word_timestamps.json.gz"
+          unzip -p "$RUNNER_TEMP/minshawi_sync/qua.zip" catalog.json > "$ASSETS/minshawi_catalog.json"
+          unzip -p "$RUNNER_TEMP/minshawi_sync/qua.zip" specials.json > "$ASSETS/minshawi_specials.json"
+
+          # Uthmani Hafs text and 604-page map used by the reader view.
+          curl -fsSL --retry 3 -o "$ASSETS/quran_uthmani.json" \
+            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_uthmani.json
+          curl -fsSL --retry 3 -o "$ASSETS/quran_pages.json" \
+            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_pages.json
+
+          python3 - <<'PY'
+          import gzip, json, re
+          a='quranapp/src/main/assets/'
+          q=json.load(open(a+'quran_uthmani.json',encoding='utf-8'))
+          p=json.load(open(a+'quran_pages.json',encoding='utf-8'))
+          w=json.load(gzip.open(a+'minshawi_word_timestamps.json.gz','rt',encoding='utf-8'))
+          c=json.load(open(a+'minshawi_catalog.json',encoding='utf-8'))
+          assert len(q)==6236, len(q)
+          assert len(p)==6236, len(p)
+          assert len(c['audio']['chapter_urls'])==114, len(c['audio']['chapter_urls'])
+          refs=set()
+          bad=[]
+          for row in w['rows']:
+              ref,start,end,canonical,silence,words=row
+              if not canonical: continue
+              s,a0=(int(x) for x in ref.split(':'))
+              k=f'{s:03d}{a0:03d}'
+              refs.add(k)
+              text=q.get(k,'')
+              tokens=text.split()
+              maxidx=max((int(x[0]) for x in words),default=0)
+              if maxidx>len(tokens): bad.append((ref,maxidx,len(tokens),text))
+          print('Canonical timed ayahs:',len(refs),'Quran ayahs:',len(q),'word-index mismatches:',len(bad))
+          if bad:
+              print('First mismatches:',bad[:10])
+              raise SystemExit('Quran text tokenization does not match word timing indices')
+          assert len(refs)==6236
+          PY
+
       - name: Set up Gradle 9.6
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -49,7 +97,7 @@ jobs:
           KEYSTORE="$RUNNER_TEMP/minshawi-release.jks"
           PASS="$(openssl rand -hex 24)"
           ALIGNED="$RUNNER_TEMP/minshawi-aligned.apk"
-          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.0.0.apk"
+          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.1.0.apk"
           keytool -genkeypair -keystore "$KEYSTORE" -storepass "$PASS" -keypass "$PASS" -alias minshawi -keyalg RSA -keysize 4096 -validity 3650 -dname "CN=Al Minshawi Murattal, O=Quran Audio, C=SA"
           "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" "$ALIGNED"
           "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias minshawi --ks-pass "pass:$PASS" --key-pass "pass:$PASS" --out "$FINAL" "$ALIGNED"
@@ -60,13 +108,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlMinshawi-Murattal-Lost-APK
-          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.0.0.apk
+          name: AlMinshawi-Murattal-Lost-v1.1-APK
+          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.1.0.apk
           if-no-files-found: error
 
       - name: Upload SHA256
         uses: actions/upload-artifact@v4
         with:
-          name: AlMinshawi-Murattal-Lost-SHA256
+          name: AlMinshawi-Murattal-Lost-v1.1-SHA256
           path: ${{ runner.temp }}/minshawi-sha256.txt
           if-no-files-found: error
