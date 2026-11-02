@@ -1,4 +1,4 @@
-name: Inspect exact Quran script for synchronized Minshawi reader
+name: Inspect exact Quran word payloads
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect DigitalKhatt v2 script schema
+      - name: Inspect DigitalKhatt word text values
         shell: bash
         run: |
           set -euo pipefail
@@ -20,45 +20,9 @@ jobs:
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/digital_khatt_v2_script.json
           python3 - <<'PY'
           import json
-          p='/tmp/script.json'
-          d=json.load(open(p,encoding='utf-8'))
-          print('type',type(d).__name__,'bytes',__import__('os').path.getsize(p))
-          if isinstance(d,dict):
-              print('top keys',list(d)[:30])
-              for k in list(d)[:8]:
-                  v=d[k]
-                  print('\nKEY',k,'TYPE',type(v).__name__)
-                  if isinstance(v,dict): print(' subkeys',list(v)[:20]); print(' sample',repr(list(v.items())[:3])[:6000])
-                  elif isinstance(v,list): print(' len',len(v),' sample',repr(v[:3])[:6000])
-                  else: print(' value',repr(v)[:3000])
-          elif isinstance(d,list):
-              print('len',len(d),'sample',repr(d[:5])[:10000])
+          d=json.load(open('/tmp/script.json',encoding='utf-8'))
+          for k in ['1:1:1','1:1:2','1:4:1','1:4:2','1:4:3','2:3:1','2:3:8','114:6:3']:
+              print(k,repr(d.get(k)))
+          print('entries',len(d))
+          print('text_type',type(d['1:1:1']['text']).__name__)
           PY
-
-      - name: Verify exact Minshawi Drive audio is directly streamable
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/qua
-          curl -fsSL --retry 3 -o /tmp/qua/minshawi.zip \
-            https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
-          unzip -q /tmp/qua/minshawi.zip -d /tmp/qua/u
-          python3 - <<'PY' > /tmp/urls.txt
-          import json,re
-          c=json.load(open('/tmp/qua/u/catalog.json',encoding='utf-8'))
-          urls=c['audio']['chapter_urls']
-          for ch in [1,24,114]:
-              u=urls[str(ch)] if isinstance(urls,dict) else urls[ch-1]
-              m=re.search(r'/d/([^/]+)',u)
-              assert m, u
-              print(ch, 'https://drive.usercontent.google.com/download?id='+m.group(1)+'&export=download&confirm=t')
-          PY
-          while read -r ch url; do
-            curl -L --fail --retry 2 --connect-timeout 20 --max-time 45 \
-              -H 'Range: bytes=0-65535' -o /tmp/chunk.bin "$url"
-            python3 - <<'PY'
-          b=open('/tmp/chunk.bin','rb').read(16)
-          print('mp3 prefix',b[:3],b.hex())
-          assert b.startswith(b'ID3') or (len(b)>=2 and b[0]==0xff and (b[1]&0xe0)==0xe0)
-          PY
-          done < /tmp/urls.txt
