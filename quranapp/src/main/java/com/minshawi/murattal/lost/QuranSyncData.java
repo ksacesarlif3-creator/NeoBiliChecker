@@ -188,12 +188,21 @@ public final class QuranSyncData {
     }
 
     public int firstWordStartMs(int surah, int ayah) {
-        String key = "a:" + ayah;
+        String target = "a:" + ayah;
         int best = Integer.MAX_VALUE;
         for (WordMoment w : getMoments(surah)) {
-            if (w.key.equals(key) && w.startMs < best) best = w.startMs;
+            if (w.key.equals(target) && w.startMs < best) best = w.startMs;
         }
         return best == Integer.MAX_VALUE ? -1 : best;
+    }
+
+    public int lastWordEndMs(int surah, int ayah) {
+        String target = "a:" + ayah;
+        int best = -1;
+        for (WordMoment w : getMoments(surah)) {
+            if (w.key.equals(target) && w.endMs > best) best = w.endMs;
+        }
+        return best;
     }
 
     public int chapterOffsetMs(int surah) {
