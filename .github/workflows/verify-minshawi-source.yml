@@ -12,55 +12,38 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect exact word timestamp schema and alignment
+      - name: Compare Archive 2026 chapter durations to QUA 1967 timing extents
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p /tmp/qua
-          curl -fsSL --retry 3 -o /tmp/qua/minshawi.zip \
-            https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
-          unzip -q /tmp/qua/minshawi.zip -d /tmp/qua/unpacked
+          curl -fsSL --retry 3 -o /tmp/qua/minshawi.zip https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
+          unzip -q /tmp/qua/minshawi.zip -d /tmp/qua/u
           python3 - <<'PY'
           import gzip,json,urllib.request,re
-          root='/tmp/qua/unpacked'
+          root='/tmp/qua/u'
+          w=json.load(gzip.open(root+'/word_timestamps.json.gz','rt',encoding='utf-8'))
           cat=json.load(open(root+'/catalog.json',encoding='utf-8'))
-          print('CATALOG KEYS',cat.keys())
-          print('AUDIO KEYS',cat.get('audio',{}).keys())
-          print('OFFSETS',cat.get('audio',{}).get('chapter_offsets_ms',{}))
-          for fn in ['word_timestamps.json.gz','verse_timestamps.json.gz']:
-              with gzip.open(root+'/'+fn,'rt',encoding='utf-8') as f: d=json.load(f)
-              print('\n',fn,'type',type(d).__name__)
-              if isinstance(d,dict):
-                  print('keys sample',list(d)[:5])
-                  for k in list(d)[:3]: print('sample',k,repr(d[k])[:3000])
-              else: print('len',len(d),'sample',repr(d[:3])[:5000])
-          with gzip.open(root+'/word_timestamps.json.gz','rt',encoding='utf-8') as f: w=json.load(f)
-          # compact chapter timing extents, accepting common wire shapes
-          def times_for_ch(ch):
-              x=w.get(str(ch),w.get(ch)) if isinstance(w,dict) else None
-              vals=[]
-              def walk(o):
-                  if isinstance(o,dict):
-                      for a,b in [('start_ms','end_ms'),('start','end'),('time_start','time_end')]:
-                          if a in o and b in o:
-                              try: vals.append((float(o[a]),float(o[b])))
-                              except: pass
-                      for v in o.values(): walk(v)
-                  elif isinstance(o,list):
-                      if len(o)>=3 and all(isinstance(z,(int,float)) for z in o[-2:]): vals.append((float(o[-2]),float(o[-1])))
-                      else:
-                          for v in o: walk(v)
-              walk(x); return vals
-          raw=urllib.request.urlopen(urllib.request.Request('https://archive.org/metadata/a00ssssss260908ddd',headers={'User-Agent':'sync-check'}),timeout=30).read()
-          arc=json.loads(raw); durations={}
+          off={int(k):int(v) for k,v in cat['audio'].get('chapter_offsets_ms',{}).items()}
+          ext={}
+          for row in w['rows']:
+              ref,start,end,canonical,silence,words=row
+              ch=int(ref.split(':')[0])
+              e=max([end]+[x[2] for x in words]) + off.get(ch,0)
+              ext[ch]=max(ext.get(ch,0),e)
+          req=urllib.request.Request('https://archive.org/metadata/a00ssssss260908ddd',headers={'User-Agent':'sync-check'})
+          arc=json.load(urllib.request.urlopen(req,timeout=30)); dur={}
           for f in arc.get('files',[]):
               m=re.match(r'^(\d{3}).*\.mp3$',str(f.get('name','')),re.I)
-              if m:
-                  try: durations[int(m.group(1))]=float(f.get('length',0))*1000
+              if m and f.get('length'):
+                  try: dur[int(m.group(1))]=round(float(f['length'])*1000)
                   except: pass
-          for ch in [1,2,3,10,18,36,55,77,114]:
-              vals=times_for_ch(ch)
-              mx=max((b for a,b in vals),default=0)
-              mn=min((a for a,b in vals),default=0)
-              print('EXTENT',ch,'n=',len(vals),'min=',mn,'max=',mx,'archive_ms=',durations.get(ch),'delta=',None if not durations.get(ch) else durations[ch]-mx)
+          deltas={ch:dur[ch]-ext[ch] for ch in range(1,115) if ch in dur and ch in ext}
+          print('matched',len(deltas),'of 114')
+          print('max_abs_delta_ms',max(abs(v) for v in deltas.values()))
+          print('median_abs_delta_ms',sorted(abs(v) for v in deltas.values())[len(deltas)//2])
+          print('sample',[(ch,ext[ch],dur[ch],deltas[ch]) for ch in [1,2,3,10,18,36,55,77,114]])
+          bad=[(ch,d) for ch,d in deltas.items() if abs(d)>2500]
+          print('over_2500ms',bad)
+          if len(deltas)<114 or len(bad)>3: raise SystemExit('Archive source is not sufficiently aligned')
           PY
