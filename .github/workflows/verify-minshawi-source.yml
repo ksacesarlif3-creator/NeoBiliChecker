@@ -1,4 +1,4 @@
-name: Verify Al-Minshawi 2026 Audio Source
+name: Verify Al-Minshawi Exact Audio Source
 
 on:
   push:
@@ -12,38 +12,37 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Compare Archive 2026 chapter durations to QUA 1967 timing extents
+      - name: Check QUA Google Drive chapter sources are directly streamable
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p /tmp/qua
           curl -fsSL --retry 3 -o /tmp/qua/minshawi.zip https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
           unzip -q /tmp/qua/minshawi.zip -d /tmp/qua/u
-          python3 - <<'PY'
-          import gzip,json,urllib.request,re
-          root='/tmp/qua/u'
-          w=json.load(gzip.open(root+'/word_timestamps.json.gz','rt',encoding='utf-8'))
-          cat=json.load(open(root+'/catalog.json',encoding='utf-8'))
-          off={int(k):int(v) for k,v in cat['audio'].get('chapter_offsets_ms',{}).items()}
-          ext={}
-          for row in w['rows']:
-              ref,start,end,canonical,silence,words=row
-              ch=int(ref.split(':')[0])
-              e=max([end]+[x[2] for x in words]) + off.get(ch,0)
-              ext[ch]=max(ext.get(ch,0),e)
-          req=urllib.request.Request('https://archive.org/metadata/a00ssssss260908ddd',headers={'User-Agent':'sync-check'})
-          arc=json.load(urllib.request.urlopen(req,timeout=30)); dur={}
-          for f in arc.get('files',[]):
-              m=re.match(r'^(\d{3}).*\.mp3$',str(f.get('name','')),re.I)
-              if m and f.get('length'):
-                  try: dur[int(m.group(1))]=round(float(f['length'])*1000)
-                  except: pass
-          deltas={ch:dur[ch]-ext[ch] for ch in range(1,115) if ch in dur and ch in ext}
-          print('matched',len(deltas),'of 114')
-          print('max_abs_delta_ms',max(abs(v) for v in deltas.values()))
-          print('median_abs_delta_ms',sorted(abs(v) for v in deltas.values())[len(deltas)//2])
-          print('sample',[(ch,ext[ch],dur[ch],deltas[ch]) for ch in [1,2,3,10,18,36,55,77,114]])
-          bad=[(ch,d) for ch,d in deltas.items() if abs(d)>2500]
-          print('over_2500ms',bad)
-          if len(deltas)<114 or len(bad)>3: raise SystemExit('Archive source is not sufficiently aligned')
+          python3 - <<'PY' > /tmp/urls.txt
+          import json,re
+          c=json.load(open('/tmp/qua/u/catalog.json',encoding='utf-8'))
+          urls=c['audio']['chapter_urls']
+          for ch in [1,2,24,55,114]:
+              u=urls[str(ch)] if isinstance(urls,dict) else urls[ch-1]
+              m=re.search(r'/d/([^/]+)',u)
+              if not m: raise SystemExit('No drive id for '+str(ch)+': '+u)
+              fid=m.group(1)
+              print(ch, 'https://drive.usercontent.google.com/download?id='+fid+'&export=download&confirm=t')
           PY
+          while read -r ch url; do
+            echo "=== SURAH $ch ==="
+            rm -f /tmp/chunk.bin /tmp/hdr.txt
+            curl -L --fail --retry 2 --connect-timeout 20 --max-time 45 \
+              -H 'Range: bytes=0-65535' -D /tmp/hdr.txt -o /tmp/chunk.bin "$url"
+            sed -n '1,30p' /tmp/hdr.txt
+            echo bytes=$(wc -c </tmp/chunk.bin)
+            file /tmp/chunk.bin
+            python3 - <<'PY'
+          p='/tmp/chunk.bin'
+          b=open(p,'rb').read(16)
+          print('first16',b.hex(),b[:3])
+          if not (b.startswith(b'ID3') or (len(b)>=2 and b[0]==0xff and (b[1]&0xe0)==0xe0)):
+              raise SystemExit('Not MP3 bytes')
+          PY
+          done < /tmp/urls.txt
