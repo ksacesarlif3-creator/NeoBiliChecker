@@ -40,25 +40,23 @@ jobs:
 
           curl -fsSL --retry 3 -o "$TMP/qua.zip" \
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
-          unzip -p "$TMP/qua.zip" word_timestamps.json.gz > "$ASSETS/minshawi_word_timestamps.json.gz"
+          # Keep gzip bytes but give the asset a .bin suffix. AAPT strips .gz from asset names.
+          unzip -p "$TMP/qua.zip" word_timestamps.json.gz > "$ASSETS/minshawi_word_timestamps.bin"
           unzip -p "$TMP/qua.zip" catalog.json > "$ASSETS/minshawi_catalog.json"
           unzip -p "$TMP/qua.zip" specials.json > "$ASSETS/minshawi_specials.json"
 
           curl -fsSL --retry 3 -o "$TMP/digital_khatt_v2_script.json" \
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/digital_khatt_v2_script.json
 
-          # Page assignment is the standard 604-page Madinah layout. Text itself is rebuilt
-          # from the exact DigitalKhatt word locations used by the timing dataset.
           curl -fsSL --retry 3 -o "$ASSETS/quran_pages.json" \
             https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_pages.json
 
           python3 - <<'PY'
           import gzip,json,os
-          from collections import defaultdict
           A='quranapp/src/main/assets/'
           T=os.environ['RUNNER_TEMP']+'/minshawi_sync/'
           script=json.load(open(T+'digital_khatt_v2_script.json',encoding='utf-8'))
-          timing=json.load(gzip.open(A+'minshawi_word_timestamps.json.gz','rt',encoding='utf-8'))
+          timing=json.load(gzip.open(A+'minshawi_word_timestamps.bin','rt',encoding='utf-8'))
           pages=json.load(open(A+'quran_pages.json',encoding='utf-8'))
           catalog=json.load(open(A+'minshawi_catalog.json',encoding='utf-8'))
 
@@ -148,6 +146,10 @@ jobs:
           "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias minshawi --ks-pass "pass:$PASS" --key-pass "pass:$PASS" --out "$FINAL" "$ALIGNED"
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$FINAL"
           "$BUILD_TOOLS/zipalign" -c -v 4 "$FINAL"
+          unzip -l "$FINAL" | tee "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'assets/minshawi_word_timestamps.bin' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'assets/quran_display.json' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'assets/quran_pages.json' "$RUNNER_TEMP/apk-contents.txt"
           sha256sum "$FINAL" | tee "$RUNNER_TEMP/minshawi-sha256.txt"
 
       - name: Upload APK
