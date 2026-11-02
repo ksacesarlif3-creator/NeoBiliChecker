@@ -1,0 +1,222 @@
+from pathlib import Path
+
+p = Path('quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java')
+s = p.read_text(encoding='utf-8')
+
+
+def rep(old, new, label):
+    global s
+    if old not in s:
+        raise SystemExit('patch target not found: ' + label)
+    s = s.replace(old, new, 1)
+
+
+rep('import android.widget.LinearLayout;\n',
+    'import android.widget.LinearLayout;\nimport android.widget.NumberPicker;\n',
+    'NumberPicker import')
+
+rep('    private Button readerToggleButton;\n',
+    '    private Button readerToggleButton;\n    private Button repeatButton;\n',
+    'repeat button field')
+
+rep('    private boolean ruqyahSingleBlock = false;\n', '''    private boolean ruqyahSingleBlock = false;\n\n    private boolean repeatRangeActive = false;\n    private int repeatSurahIndex = -1;\n    private int repeatStartAyah = -1;\n    private int repeatEndAyah = -1;\n    private int repeatStartMs = -1;\n    private int repeatEndMs = -1;\n''', 'repeat state fields')
+
+rep('''        readerInfo.setGravity(Gravity.CENTER);\n        top.addView(readerInfo);\n        screen.addView(top);''', '''        readerInfo.setGravity(Gravity.CENTER);\n        top.addView(readerInfo);\n\n        Button repeatReader = smallButton("🔁 تكرار آيات", true);\n        repeatReader.setOnClickListener(v -> showRepeatDialog(readerSurahIndex, -1));\n        LinearLayout.LayoutParams rrp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38));\n        rrp.setMargins(0, dp(6), 0, 0);\n        top.addView(repeatReader, rrp);\n        screen.addView(top);''', 'reader repeat button')
+
+rep('''        speedButton = smallButton("١٫٠×", true);\n        speedButton.setOnClickListener(v -> showSpeedDialog());\n        first.addView(speedButton, new LinearLayout.LayoutParams(dp(66), dp(36)));\n        panel.addView(first);''', '''        speedButton = smallButton("١٫٠×", true);\n        speedButton.setOnClickListener(v -> showSpeedDialog());\n        first.addView(speedButton, new LinearLayout.LayoutParams(dp(66), dp(36)));\n        repeatButton = smallButton("🔁 تكرار", true);\n        repeatButton.setOnClickListener(v -> showRepeatDialog(currentIndex >= 0 ? currentIndex : readerSurahIndex, -1));\n        LinearLayout.LayoutParams repeatLp = new LinearLayout.LayoutParams(dp(86), dp(36));\n        repeatLp.setMarginStart(dp(6));\n        first.addView(repeatButton, repeatLp);\n        panel.addView(first);''', 'global repeat button')
+
+rep('''        textCol.setOnClickListener(v -> showReader(index));\n        card.addView(textCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));''', '''        textCol.setOnClickListener(v -> showReader(index));\n        textCol.setOnLongClickListener(v -> {\n            showRepeatDialog(index, -1);\n            return true;\n        });\n        card.addView(textCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));''', 'surah long press')
+
+rep('''            verse.setPadding(dp(8), dp(8), dp(8), dp(8));\n            verse.setBackground(rounded(Color.rgb(255, 253, 246), dp(12), Color.rgb(232, 224, 199), dp(1)));''', '''            verse.setPadding(dp(8), dp(8), dp(8), dp(8));\n            boolean inRepeatRange = repeatRangeActive && repeatSurahIndex == readerSurahIndex\n                    && ayahNo >= repeatStartAyah && ayahNo <= repeatEndAyah;\n            verse.setBackground(rounded(inRepeatRange ? Color.rgb(255, 248, 218) : Color.rgb(255, 253, 246),\n                    dp(12), inRepeatRange ? GOLD : Color.rgb(232, 224, 199), inRepeatRange ? dp(2) : dp(1)));''', 'reader repeat highlight')
+
+rep('''            verse.setOnClickListener(v -> seekToAyah(readerSurahIndex, ayahNo));\n            readerBody.addView(verse);''', '''            verse.setOnClickListener(v -> seekToAyah(readerSurahIndex, ayahNo));\n            verse.setOnLongClickListener(v -> {\n                showRepeatDialog(readerSurahIndex, ayahNo);\n                return true;\n            });\n            readerBody.addView(verse);''', 'verse long press')
+
+rep('''        TextView note = readerMessage("تضيء الكلمة الموافقة للصوت تلقائيًا. اضغط على أي آية للانتقال إلى بدايتها.", 11, MUTED);''', '''        TextView note = readerMessage(repeatRangeActive && repeatSurahIndex == readerSurahIndex\n                ? "التكرار المستمر مفعّل من الآية " + toArabicDigits(repeatStartAyah) + " إلى " + toArabicDigits(repeatEndAyah) + ". اضغط مطولًا على آية لتغيير المدى."\n                : "تضيء الكلمة الموافقة للصوت تلقائيًا. اضغط على الآية للانتقال إليها، واضغط مطولًا لاختيار مدى للتكرار.", 11, MUTED);''', 'reader note')
+
+rep('''        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, dp(40), 1f);\n        rp.setMarginStart(dp(7));\n        buttons.addView(read, rp);\n        card.addView(buttons);''', '''        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, dp(40), 1f);\n        rp.setMarginStart(dp(7));\n        buttons.addView(read, rp);\n        Button repeatForever = smallButton("🔁 مستمر", true);\n        repeatForever.setOnClickListener(v -> activateRepeatRange(s.surah - 1, s.startAyah, s.endAyah));\n        LinearLayout.LayoutParams rfp = new LinearLayout.LayoutParams(0, dp(40), 1f);\n        rfp.setMarginStart(dp(7));\n        buttons.addView(repeatForever, rfp);\n        card.addView(buttons);''', 'ruqyah continuous repeat')
+
+marker = '    private void startRuqyah(int segmentIndex, boolean singleBlock) {'
+if marker not in s:
+    raise SystemExit('patch target not found: repeat methods marker')
+
+methods = r'''    private void showRepeatDialog(int surahIndex, int suggestedAyah) {
+        if (syncData == null || syncLoading) {
+            Toast.makeText(this, "بيانات المصحف ما زالت تُجهز", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        surahIndex = Math.max(0, Math.min(113, surahIndex));
+        List<QuranSyncData.Ayah> ayahs = syncData.getSurah(surahIndex + 1);
+        if (ayahs.isEmpty()) return;
+        final int chosenSurah = surahIndex;
+        final int maxAyah = ayahs.size();
+        int hint = suggestedAyah > 0 ? suggestedAyah : currentAyahForRepeat(chosenSurah);
+        if (hint < 1 || hint > maxAyah) hint = 1;
+        int startDefault = repeatRangeActive && repeatSurahIndex == chosenSurah ? repeatStartAyah : hint;
+        int endDefault = repeatRangeActive && repeatSurahIndex == chosenSurah ? repeatEndAyah : hint;
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(8), dp(24), 0);
+        TextView intro = readerMessage("اختر آية البداية وآية النهاية. سيستمر المقطع في التكرار حتى تضغط إيقاف التكرار.", 13, MUTED);
+        intro.setGravity(Gravity.CENTER);
+        intro.setPadding(0, 0, 0, dp(8));
+        box.addView(intro);
+
+        LinearLayout pickers = new LinearLayout(this);
+        pickers.setGravity(Gravity.CENTER);
+        pickers.setOrientation(LinearLayout.HORIZONTAL);
+
+        LinearLayout startCol = new LinearLayout(this);
+        startCol.setOrientation(LinearLayout.VERTICAL);
+        startCol.setGravity(Gravity.CENTER);
+        TextView startLabel = readerMessage("بداية", 13, GREEN);
+        startLabel.setGravity(Gravity.CENTER);
+        NumberPicker startPicker = new NumberPicker(this);
+        configureAyahPicker(startPicker, maxAyah, startDefault);
+        startCol.addView(startLabel);
+        startCol.addView(startPicker);
+        pickers.addView(startCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout endCol = new LinearLayout(this);
+        endCol.setOrientation(LinearLayout.VERTICAL);
+        endCol.setGravity(Gravity.CENTER);
+        TextView endLabel = readerMessage("نهاية", 13, GREEN);
+        endLabel.setGravity(Gravity.CENTER);
+        NumberPicker endPicker = new NumberPicker(this);
+        configureAyahPicker(endPicker, maxAyah, endDefault);
+        endCol.addView(endLabel);
+        endCol.addView(endPicker);
+        pickers.addView(endCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(pickers);
+
+        startPicker.setOnValueChangedListener((picker, oldVal, newVal) -> {
+            if (newVal > endPicker.getValue()) endPicker.setValue(newVal);
+        });
+        endPicker.setOnValueChangedListener((picker, oldVal, newVal) -> {
+            if (newVal < startPicker.getValue()) startPicker.setValue(newVal);
+        });
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("تكرار آيات من سورة " + surahs[chosenSurah])
+                .setView(box)
+                .setPositiveButton("تشغيل وتكرار", (d, w) -> activateRepeatRange(chosenSurah, startPicker.getValue(), endPicker.getValue()))
+                .setNegativeButton("إلغاء", null);
+        if (repeatRangeActive) b.setNeutralButton("إيقاف التكرار", (d, w) -> clearRepeatRange(true));
+        b.show();
+    }
+
+    private void configureAyahPicker(NumberPicker picker, int maxAyah, int value) {
+        picker.setMinValue(1);
+        picker.setMaxValue(maxAyah);
+        picker.setWrapSelectorWheel(false);
+        String[] labels = new String[maxAyah];
+        for (int i = 1; i <= maxAyah; i++) labels[i - 1] = toArabicDigits(i);
+        picker.setDisplayedValues(labels);
+        picker.setValue(Math.max(1, Math.min(maxAyah, value)));
+    }
+
+    private int currentAyahForRepeat(int surahIndex) {
+        if (readerVisible && readerSurahIndex == surahIndex && highlightedAyah > 0) return highlightedAyah;
+        if (currentIndex != surahIndex || mediaPlayer == null || preparing || syncData == null) return 1;
+        int pos;
+        try { pos = mediaPlayer.getCurrentPosition(); } catch (Exception e) { return 1; }
+        int lastAyah = 1;
+        for (QuranSyncData.WordMoment m : syncData.getMoments(surahIndex + 1)) {
+            if (m.ayah <= 0) continue;
+            if (m.startMs > pos) break;
+            lastAyah = m.ayah;
+            if (pos >= m.startMs && pos <= m.endMs) return m.ayah;
+        }
+        return lastAyah;
+    }
+
+    private void activateRepeatRange(int surahIndex, int startAyah, int endAyah) {
+        if (syncData == null) return;
+        if (startAyah > endAyah) { int t = startAyah; startAyah = endAyah; endAyah = t; }
+        int start = syncData.firstWordStartMs(surahIndex + 1, startAyah);
+        int end = syncData.lastWordEndMs(surahIndex + 1, endAyah);
+        if (start < 0 || end <= start) {
+            Toast.makeText(this, "تعذر تحديد توقيت هذا المدى", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        ruqyahActive = false;
+        ruqyahStopMs = -1;
+        ruqyahSegmentIndex = -1;
+        ruqyahRepeatIndex = 0;
+        ruqyahSingleBlock = false;
+
+        repeatRangeActive = false;
+        playSurah(surahIndex, start, false);
+        repeatRangeActive = true;
+        repeatSurahIndex = surahIndex;
+        repeatStartAyah = startAyah;
+        repeatEndAyah = endAyah;
+        repeatStartMs = start;
+        repeatEndMs = end + 180;
+        updateRepeatButton();
+        nowPlayingText.setText("🔁 سورة " + surahs[surahIndex] + " • الآيات " + toArabicDigits(startAyah) + (startAyah == endAyah ? "" : "–" + toArabicDigits(endAyah)));
+        if (statusText != null) statusText.setText("التكرار المستمر مفعّل • سيعاد المدى المحدد تلقائيًا حتى إيقافه");
+        if (readerVisible && readerSurahIndex == surahIndex) renderReader(surahIndex, false);
+        if (ruqyahVisible) renderRuqyah();
+    }
+
+    private void clearRepeatRange(boolean announce) {
+        boolean was = repeatRangeActive;
+        int oldSurah = repeatSurahIndex;
+        repeatRangeActive = false;
+        repeatSurahIndex = -1;
+        repeatStartAyah = -1;
+        repeatEndAyah = -1;
+        repeatStartMs = -1;
+        repeatEndMs = -1;
+        updateRepeatButton();
+        if (announce && was) {
+            Toast.makeText(this, "تم إيقاف تكرار الآيات", Toast.LENGTH_SHORT).show();
+            if (statusText != null) statusText.setText("تم إيقاف التكرار المستمر");
+        }
+        if (readerVisible && oldSurah == readerSurahIndex) renderReader(readerSurahIndex, false);
+    }
+
+    private void updateRepeatButton() {
+        if (repeatButton == null) return;
+        if (repeatRangeActive) {
+            String range = repeatStartAyah == repeatEndAyah ? toArabicDigits(repeatStartAyah)
+                    : toArabicDigits(repeatStartAyah) + "–" + toArabicDigits(repeatEndAyah);
+            repeatButton.setText("🔁 " + range);
+        } else {
+            repeatButton.setText("🔁 تكرار");
+        }
+    }
+
+    private void repeatRangeNow() {
+        if (!repeatRangeActive || mediaPlayer == null || preparing || currentIndex != repeatSurahIndex) return;
+        try {
+            mediaPlayer.seekTo(repeatStartMs);
+            seekBar.setProgress(repeatStartMs);
+            mediaPlayer.start();
+            applyPlaybackSpeed(mediaPlayer);
+            bottomPlayButton.setText("❚❚");
+            updateWordHighlight(repeatStartMs);
+        } catch (Exception ignored) {}
+    }
+
+'''
+s = s.replace(marker, methods + marker, 1)
+
+rep('''    private void startRuqyah(int segmentIndex, boolean singleBlock) {\n        if (syncData == null || syncLoading) {''', '''    private void startRuqyah(int segmentIndex, boolean singleBlock) {\n        clearRepeatRange(false);\n        if (syncData == null || syncLoading) {''', 'clear repeat on ruqyah')
+
+rep('''        if (!fromRuqyah) {\n            ruqyahActive = false;''', '''        if (!fromRuqyah) {\n            if (repeatRangeActive && (index != repeatSurahIndex || initialSeekMs < 0)) clearRepeatRange(false);\n            ruqyahActive = false;''', 'clear repeat on normal navigation')
+
+rep('''            if (statusText != null) statusText.setText(local.exists()\n                    ? "تشغيل أوفلاين • التزامن كلمة بكلمة يعمل من البيانات المدمجة"\n                    : "تشغيل من المصدر الأصلي المطابق لتوقيت الكلمات • التزامن الدقيق مفعّل");\n            rebuildList();''', '''            if (statusText != null) statusText.setText(local.exists()\n                    ? "تشغيل أوفلاين • التزامن كلمة بكلمة يعمل من البيانات المدمجة"\n                    : "تشغيل من المصدر الأصلي المطابق لتوقيت الكلمات • التزامن الدقيق مفعّل");\n            if (repeatRangeActive && currentIndex == repeatSurahIndex) {\n                nowPlayingText.setText("🔁 سورة " + surahs[currentIndex] + " • الآيات " + toArabicDigits(repeatStartAyah)\n                        + (repeatStartAyah == repeatEndAyah ? "" : "–" + toArabicDigits(repeatEndAyah)));\n                if (statusText != null) statusText.setText("التكرار المستمر مفعّل • المدى المحدد سيعاد تلقائيًا");\n            }\n            rebuildList();''', 'prepared repeat status')
+
+rep('''        mediaPlayer.setOnCompletionListener(mp -> {\n            bottomPlayButton.setText("▶");\n            clearHighlight();\n            if (ruqyahActive) advanceRuqyah();\n            else if (currentIndex < 113) playSurah(currentIndex + 1);\n        });''', '''        mediaPlayer.setOnCompletionListener(mp -> {\n            clearHighlight();\n            if (repeatRangeActive && currentIndex == repeatSurahIndex) {\n                repeatRangeNow();\n                return;\n            }\n            bottomPlayButton.setText("▶");\n            if (ruqyahActive) advanceRuqyah();\n            else if (currentIndex < 113) playSurah(currentIndex + 1);\n        });''', 'completion repeat')
+
+rep('''                int target = seekBar.getProgress();\n                userSeeking = false;\n                if (mediaPlayer != null && !preparing) {''', '''                int target = seekBar.getProgress();\n                userSeeking = false;\n                if (repeatRangeActive && currentIndex == repeatSurahIndex) {\n                    target = Math.max(repeatStartMs, Math.min(target, Math.max(repeatStartMs, repeatEndMs - 1)));\n                    seekBar.setProgress(target);\n                }\n                if (mediaPlayer != null && !preparing) {''', 'seek clamp')
+
+rep('''                    updateWordHighlight(pos);\n                    if (ruqyahActive && ruqyahStopMs > 0 && pos >= ruqyahStopMs) {\n                        advanceRuqyah();\n                    }''', '''                    updateWordHighlight(pos);\n                    if (repeatRangeActive && currentIndex == repeatSurahIndex && repeatEndMs > 0 && pos >= repeatEndMs) {\n                        repeatRangeNow();\n                    } else if (ruqyahActive && ruqyahStopMs > 0 && pos >= ruqyahStopMs) {\n                        advanceRuqyah();\n                    }''', 'ticker repeat')
+
+rep('''        String message = "التطبيق مخصص للختمة الإذاعية الثانية المرتلة للشيخ محمد صديق المنشاوي، المعروفة حديثًا بالمصحف المرتل المفقود.\\\n\\\n"\n                + "الإصدار 1.2 يضيف قسم الرقية الشرعية القرآنية بصوت الشيخ المنشاوي، مع تشغيل متتابع وتكرار آلي للمقاطع المختارة، مع استمرار التحكم في السرعة وشريط الزمن ومتابعة النص.\\\n\\\n"''', '''        String message = "التطبيق مخصص للختمة الإذاعية الثانية المرتلة للشيخ محمد صديق المنشاوي، المعروفة حديثًا بالمصحف المرتل المفقود.\\\n\\\n"\n                + "الإصدار 1.3 يضيف التكرار المستمر لأي مدى من الآيات: اختر آية البداية والنهاية، ويستمر المقطع في الإعادة حتى توقفه. الميزة متاحة من المصحف، وقائمة السور، والرقية الشرعية، مع استمرار التحكم في السرعة وشريط الزمن ومتابعة النص.\\\n\\\n"''', 'about v1.3')
+
+p.write_text(s, encoding='utf-8')
+print('v1.3 repeat patch applied:', s.count('repeatRangeActive'))
