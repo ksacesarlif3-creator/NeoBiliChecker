@@ -135,12 +135,21 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+
           p=Path('quranapp/repeat_patch_v13.py')
           src=p.read_text(encoding='utf-8')
           old="    if old not in s:\n        raise SystemExit('patch target not found: ' + label)\n"
           new="    if old not in s:\n        if label == 'about v1.3':\n            return\n        raise SystemExit('patch target not found: ' + label)\n"
           if old in src:
               p.write_text(src.replace(old,new,1),encoding='utf-8')
+
+          p=Path('quranapp/enhance_patch_v14.py')
+          src=p.read_text(encoding='utf-8')
+          old="    if old not in s:\n        raise SystemExit('v1.4 patch target not found: ' + label)\n"
+          new="    if old not in s:\n        if label == 'about anchor':\n            return\n        raise SystemExit('v1.4 patch target not found: ' + label)\n"
+          if old not in src:
+              raise SystemExit('v1.4 patcher guard not found')
+          p.write_text(src.replace(old,new,1),encoding='utf-8')
           PY
           python3 quranapp/repeat_patch_v13.py
           python3 quranapp/enhance_patch_v14.py
