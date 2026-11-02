@@ -100,7 +100,8 @@ public final class QuranSyncData {
     }
 
     private void loadWordMoments(Context context) throws Exception {
-        JSONObject doc = new JSONObject(readAsset(context, "minshawi_word_timestamps.json.gz", true));
+        // Use a .bin extension so Android's asset packager does not strip the .gz suffix.
+        JSONObject doc = new JSONObject(readAsset(context, "minshawi_word_timestamps.bin", true));
         JSONArray rows = doc.getJSONArray("rows");
         for (int r = 0; r < rows.length(); r++) {
             JSONArray row = rows.getJSONArray(r);
