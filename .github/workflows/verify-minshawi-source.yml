@@ -12,40 +12,45 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Compare Archive 2026 audio with QUL Minshawi resource
+      - name: Inspect exact Minshawi 1967 word timings and Quran text
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p /tmp/qua /tmp/quran
+          curl -fL --retry 3 -o /tmp/qua/minshawi.zip \
+            https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
+          echo '=== ZIP LIST ==='
+          unzip -l /tmp/qua/minshawi.zip | head -80
+          unzip -q /tmp/qua/minshawi.zip -d /tmp/qua/unpacked
+          echo '=== FILES ==='
+          find /tmp/qua/unpacked -maxdepth 3 -type f -printf '%P\n' | head -100
+          echo '=== SAMPLE CONTENT ==='
           python3 - <<'PY'
-          import json, re, urllib.request, html
-
-          def get(url):
-              req=urllib.request.Request(url, headers={'User-Agent':'AlMinshawiMurattal-source-check/1.1'})
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  return r.read(), dict(r.headers)
-
-          raw,_=get('https://archive.org/metadata/a00ssssss260908ddd')
-          data=json.loads(raw)
-          af={}
-          for f in data.get('files',[]):
-              n=str(f.get('name',''))
-              m=re.match(r'^(\d{3})\s*-?.*\.mp3$', n, re.I)
-              if m:
-                  af[int(m.group(1))]=f
-          print('Archive tracks', len(af))
-          for s in [1,2,18,36,55,77,114]:
-              f=af.get(s,{})
-              print('ARCH',s,f.get('name'), 'length=',f.get('length'),'size=',f.get('size'))
-
-          page,_=get('https://qul.tarteel.ai/resources/recitation/396')
-          txt=page.decode('utf-8','replace')
-          print('QUL page bytes',len(page))
-          hrefs=re.findall(r'href=["\']([^"\']+)["\']',txt)
-          for h in hrefs:
-              if any(k in h.lower() for k in ['json','sqlite','download','recitation']):
-                  print('HREF',html.unescape(h))
-          scripts=re.findall(r'https?://[^"\'<> ]+',txt)
-          for u in scripts:
-              if any(k in u.lower() for k in ['json','sqlite','download','audio']):
-                  print('URL',html.unescape(u)[:500])
+          import os,json,glob
+          root='/tmp/qua/unpacked'
+          for p in glob.glob(root+'/**/*',recursive=True):
+              if not os.path.isfile(p): continue
+              if p.lower().endswith(('.json','.txt','.csv')):
+                  print('\nFILE',os.path.relpath(p,root),os.path.getsize(p))
+                  try:
+                      s=open(p,encoding='utf-8').read(5000)
+                      print(s[:5000])
+                  except Exception as e: print('ERR',e)
+          PY
+          curl -fL --retry 3 -o /tmp/quran/quran_uthmani.json \
+            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_uthmani.json
+          curl -fL --retry 3 -o /tmp/quran/quran_pages.json \
+            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_pages.json
+          echo '=== QURAN SCHEMA ==='
+          python3 - <<'PY'
+          import json
+          q=json.load(open('/tmp/quran/quran_uthmani.json',encoding='utf-8'))
+          print(type(q).__name__)
+          if isinstance(q,dict):
+              print('keys',list(q)[:10]);
+              for k in list(q)[:2]: print(k,repr(q[k])[:1500])
+          elif isinstance(q,list):
+              print('len',len(q)); print(repr(q[:2])[:4000])
+          p=json.load(open('/tmp/quran/quran_pages.json',encoding='utf-8'))
+          print('pages entries',len(p),'first',list(p.items())[:10],'last',list(p.items())[-5:])
           PY
