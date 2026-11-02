@@ -40,7 +40,6 @@ jobs:
 
           curl -fsSL --retry 3 -o "$TMP/qua.zip" \
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
-          # Keep gzip bytes but give the asset a .bin suffix. AAPT strips .gz from asset names.
           unzip -p "$TMP/qua.zip" word_timestamps.json.gz > "$ASSETS/minshawi_word_timestamps.bin"
           unzip -p "$TMP/qua.zip" catalog.json > "$ASSETS/minshawi_catalog.json"
           unzip -p "$TMP/qua.zip" specials.json > "$ASSETS/minshawi_specials.json"
@@ -96,31 +95,6 @@ jobs:
           json.dump(display,open(A+'quran_display.json','w',encoding='utf-8'),ensure_ascii=False,separators=(',',':'))
           PY
 
-      - name: Force playback/downloads to the exact QUA-matched audio source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          p='quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java'
-          s=open(p,encoding='utf-8').read()
-          s=s.replace('        loadCachedUrls();\n','')
-          s=s.replace('        refreshArchiveIndex();\n','')
-          s=s.replace(
-          '''    private void playSurah(int index, int initialSeekMs) {\n        if (index < 0 || index >= 114) return;''',
-          '''    private void playSurah(int index, int initialSeekMs) {\n        if (index < 0 || index >= 114) return;\n        if (syncData == null) {\n            statusText.setText("جاري تجهيز مصدر التلاوة المتزامن…");\n            Toast.makeText(this, "بيانات التزامن تُجهز الآن، أعد المحاولة بعد لحظة", Toast.LENGTH_SHORT).show();\n            return;\n        }''')
-          old='''    private String getStreamUrl(int index) {\n        if (streamUrls[index] != null && !streamUrls[index].isEmpty()) return streamUrls[index];\n        return DOWNLOAD_BASE + String.format(Locale.US, "%03d.mp3", index + 1);\n    }'''
-          new='''    private String getStreamUrl(int index) {\n        if (syncData == null) return null;\n        return syncData.exactAudioUrl(index + 1);\n    }'''
-          if old not in s: raise SystemExit('getStreamUrl source block not found')
-          s=s.replace(old,new)
-          s=s.replace('new File(getFilesDir(), "audio")','new File(getFilesDir(), "audio_exact_v11")')
-          s=s.replace('" • بث مباشر"','" • المصدر المتزامن"')
-          s=s.replace('"تشغيل من نسخة الإذاعة 2026 • التزامن كلمة بكلمة مفعّل"','"تشغيل من المصدر الأصلي المطابق لتوقيت الكلمات • التزامن الدقيق مفعّل"')
-          s=s.replace('"تم ربط ١١٤ سورة • النص والتزامن جاهزان • يمكنك تنزيل أي سورة للأوفلاين"','"النص والتزامن جاهزان • التشغيل يستخدم المصدر الأصلي المطابق للتوقيت • يمكنك تنزيل أي سورة للأوفلاين"')
-          s=s.replace('"مصدر الصوت: نسخة بث 2026 على Archive.org. توقيتات الكلمات: Qur’anic Universal Audio. النص والصفحات: بيانات مصحف المدينة النبوية/حفص."',
-                      '"مصدر التشغيل المتزامن: التسجيل الأصلي للختمة الجديدة المطابق لتوقيتات Qur’anic Universal Audio. نسخة بث 2026 محفوظة كمرجع تاريخي لكنها لا تُستخدم للتظليل لأنها تختلف في بعض أعمال القص والمونتاج. النص: رسم عثماني حفص مع تقسيم صفحات مصحف المدينة 604 صفحة."')
-          open(p,'w',encoding='utf-8').write(s)
-          PY
-
       - name: Set up Gradle 9.6
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -140,7 +114,7 @@ jobs:
           KEYSTORE="$RUNNER_TEMP/minshawi-release.jks"
           PASS="$(openssl rand -hex 24)"
           ALIGNED="$RUNNER_TEMP/minshawi-aligned.apk"
-          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.1.0.apk"
+          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.2.0.apk"
           keytool -genkeypair -keystore "$KEYSTORE" -storepass "$PASS" -keypass "$PASS" -alias minshawi -keyalg RSA -keysize 4096 -validity 3650 -dname "CN=Al Minshawi Murattal, O=Quran Audio, C=SA"
           "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" "$ALIGNED"
           "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias minshawi --ks-pass "pass:$PASS" --key-pass "pass:$PASS" --out "$FINAL" "$ALIGNED"
@@ -155,13 +129,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlMinshawi-Murattal-Lost-v1.1-APK
-          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.1.0.apk
+          name: AlMinshawi-Murattal-Lost-v1.2-APK
+          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.2.0.apk
           if-no-files-found: error
 
       - name: Upload SHA256
         uses: actions/upload-artifact@v4
         with:
-          name: AlMinshawi-Murattal-Lost-v1.1-SHA256
+          name: AlMinshawi-Murattal-Lost-v1.2-SHA256
           path: ${{ runner.temp }}/minshawi-sha256.txt
           if-no-files-found: error
