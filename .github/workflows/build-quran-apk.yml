@@ -129,7 +129,7 @@ jobs:
           print('Tabari sample 1:2 chars:',len(by[1]['2']))
           PY
 
-      - name: Apply v1.3 repeat and v1.4 download-tafsir features
+      - name: Apply repeat, download and tafsir features
         shell: bash
         run: |
           set -euo pipefail
@@ -144,6 +144,7 @@ jobs:
           PY
           python3 quranapp/repeat_patch_v13.py
           python3 quranapp/enhance_patch_v14.py
+          python3 quranapp/fix_v14_scroll.py
           grep -q 'toggleTafsir' quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java
           grep -q 'startBulkDownload' quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java
           grep -q 'repeatRangeActive' quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java
