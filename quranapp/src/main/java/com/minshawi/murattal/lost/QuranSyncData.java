@@ -14,13 +14,14 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
 /**
- * Loads the Quran text/page map and the Qur'anic Universal Audio word timings
- * for Muhammad Siddiq al-Minshawi's 1967 (second/new) murattal recording.
- * All payloads are packaged as app assets at build time so reading and timing
- * remain available offline.
+ * Loads the exact Quran word boundaries used by Qur'anic Universal Audio and
+ * the word timestamps for Muhammad Siddiq al-Minshawi's 1967 second/new
+ * murattal recording. These data are packaged inside the APK.
  */
 public final class QuranSyncData {
     public static final class Ayah {
@@ -58,7 +59,7 @@ public final class QuranSyncData {
     private JSONObject quranPages;
     private JSONObject catalog;
     private JSONObject specials;
-    private int[] offsets = new int[114];
+    private final int[] offsets = new int[114];
 
     private QuranSyncData() {
         for (int i = 0; i < 114; i++) moments[i] = new ArrayList<>();
@@ -66,7 +67,7 @@ public final class QuranSyncData {
 
     public static QuranSyncData load(Context context) throws Exception {
         QuranSyncData d = new QuranSyncData();
-        d.quranText = new JSONObject(readAsset(context, "quran_uthmani.json", false));
+        d.quranText = new JSONObject(readAsset(context, "quran_display.json", false));
         d.quranPages = new JSONObject(readAsset(context, "quran_pages.json", false));
         d.catalog = new JSONObject(readAsset(context, "minshawi_catalog.json", false));
         d.specials = new JSONObject(readAsset(context, "minshawi_specials.json", false));
@@ -138,7 +139,6 @@ public final class QuranSyncData {
         for (int s = 1; s <= 114; s++) {
             JSONObject chapter = chapters.optJSONObject(String.valueOf(s));
             if (chapter == null) continue;
-            // The Fatihah basmala is Quran 1:1 and already has canonical word timings.
             if (s != 1) addSpecial(s, chapter.optJSONObject("basmala"), "b");
             addSpecial(s, chapter.optJSONObject("istiadha"), "i");
         }
@@ -197,6 +197,29 @@ public final class QuranSyncData {
 
     public int chapterOffsetMs(int surah) {
         return surah >= 1 && surah <= 114 ? offsets[surah - 1] : 0;
+    }
+
+    /** Returns the exact source audio URL used to create the timing data. */
+    public String exactAudioUrl(int surah) {
+        if (surah < 1 || surah > 114 || catalog == null) return null;
+        JSONObject audio = catalog.optJSONObject("audio");
+        if (audio == null) return null;
+        Object raw = audio.opt("chapter_urls");
+        String url = null;
+        if (raw instanceof JSONObject) {
+            url = ((JSONObject) raw).optString(String.valueOf(surah), null);
+        } else if (raw instanceof JSONArray) {
+            JSONArray a = (JSONArray) raw;
+            if (a.length() >= surah) url = a.optString(surah - 1, null);
+        }
+        if (url == null || url.isEmpty()) return null;
+
+        Matcher m = Pattern.compile("/d/([^/]+)").matcher(url);
+        if (m.find()) {
+            return "https://drive.usercontent.google.com/download?id=" + m.group(1)
+                    + "&export=download&confirm=t";
+        }
+        return url;
     }
 
     public String basmalaText() {
