@@ -1,0 +1,51 @@
+name: Verify Al-Minshawi 2026 Audio Source
+
+on:
+  push:
+    branches: [ "quran-minshawi-lost-v1" ]
+    paths: [ ".github/workflows/verify-minshawi-source.yml" ]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Archive.org metadata maps Quran tracks
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, re, urllib.request
+          item='a00ssssss260908ddd'
+          req=urllib.request.Request('https://archive.org/metadata/'+item, headers={'User-Agent':'AlMinshawiMurattal-source-check/1.0'})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              data=json.load(r)
+          files=data.get('files',[])
+          tracks={}
+          for f in files:
+              name=str(f.get('name',''))
+              if not name.lower().endswith('.mp3'):
+                  continue
+              candidates=[]
+              tr=str(f.get('track','')).strip()
+              m=re.match(r'^(\d{1,3})',tr)
+              if m: candidates.append(int(m.group(1)))
+              m=re.match(r'^(\d{1,3})(?:\D|$)',name)
+              if m: candidates.append(int(m.group(1)))
+              title=str(f.get('title','')).strip()
+              m=re.match(r'^(\d{1,3})(?:\D|$)',title)
+              if m: candidates.append(int(m.group(1)))
+              for n in candidates:
+                  if 1 <= n <= 114:
+                      tracks.setdefault(n,[]).append(name)
+                      break
+          print('MP3 files:', sum(1 for f in files if str(f.get('name','')).lower().endswith('.mp3')))
+          print('Mapped Quran surah numbers:', len(tracks))
+          print('First tracks:', {k: tracks[k][:2] for k in sorted(tracks)[:10]})
+          print('Last tracks:', {k: tracks[k][:2] for k in sorted(tracks)[-10:]})
+          missing=[n for n in range(1,115) if n not in tracks]
+          print('Missing:', missing)
+          if len(tracks) < 114:
+              raise SystemExit('Source does not expose all 114 surahs as numbered MP3 tracks')
+          PY
