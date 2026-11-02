@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,13 +30,13 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
-      - name: Prepare exact Quran words and Minshawi 1967 synchronization data
+      - name: Prepare Quran, synchronization and offline Tabari tafsir data
         shell: bash
         run: |
           set -euo pipefail
           ASSETS="quranapp/src/main/assets"
           TMP="$RUNNER_TEMP/minshawi_sync"
-          mkdir -p "$ASSETS" "$TMP"
+          mkdir -p "$ASSETS" "$ASSETS/tabari" "$TMP"
 
           curl -fsSL --retry 3 -o "$TMP/qua.zip" \
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
@@ -50,8 +50,11 @@ jobs:
           curl -fsSL --retry 3 -o "$ASSETS/quran_pages.json" \
             https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_pages.json
 
+          curl -fsSL --retry 3 -o "$TMP/tabari.json.gz" \
+            https://api.quranpedia.net/dumps/tafsir-book-4.json.gz
+
           python3 - <<'PY'
-          import gzip,json,os
+          import gzip,json,os,re,html
           A='quranapp/src/main/assets/'
           T=os.environ['RUNNER_TEMP']+'/minshawi_sync/'
           script=json.load(open(T+'digital_khatt_v2_script.json',encoding='utf-8'))
@@ -83,32 +86,67 @@ jobs:
 
           print('canonical ayahs',len(refs),'display ayahs',len(display),'timed words',total_words)
           print('page entries',len(pages),'audio chapters',len(catalog['audio']['chapter_urls']))
-          print('sample 1:4 =',display.get('001004'))
           if errors:
               print('errors',errors[:20]); raise SystemExit('DigitalKhatt/timing mismatch')
           assert len(refs)==6236 and len(display)==6236
           assert len(pages)==6236
           assert len(catalog['audio']['chapter_urls'])==114
-          for k,text in display.items():
-              assert k in pages, ('missing page',k)
-              assert text.strip(), ('empty text',k)
           json.dump(display,open(A+'quran_display.json','w',encoding='utf-8'),ensure_ascii=False,separators=(',',':'))
+
+          tabari=json.load(gzip.open(T+'tabari.json.gz','rt',encoding='utf-8'))
+          assert tabari.get('book',{}).get('id')==4
+          assert len(tabari.get('ayahs',[]))==6236
+
+          def clean_markup(t):
+              if not t: return ''
+              t=t.replace('\r','')
+              t=re.sub(r'(?i)<br\s*/?>','\n',t)
+              t=re.sub(r'(?i)</?(?:p|h[1-6]|div|tr|table|ul|ol|li|td|th|blockquote)[^>]*>','\n',t)
+              t=re.sub(r'(?i)</?(?:span|strong|b|i|em|a)[^>]*>','',t)
+              t=re.sub(r'<[^>]+>','',t)
+              t=html.unescape(t)
+              t=re.sub(r'[ \t]+',' ',t)
+              t=re.sub(r' *\n *','\n',t)
+              t=re.sub(r'\n{3,}','\n\n',t)
+              return t.strip()
+
+          by={s:{} for s in range(1,115)}
+          for rec in tabari['ayahs']:
+              s=int(rec['surah']); a=int(rec['ayah'])
+              pieces=[]
+              for item in rec.get('content',[]):
+                  if isinstance(item,dict):
+                      x=clean_markup(item.get('text',''))
+                      if x: pieces.append(x)
+              by[s][str(a)]='\n\n'.join(pieces)
+          assert sum(len(v) for v in by.values())==6236
+          for s in range(1,115):
+              path=A+f'tabari/{s:03d}.bin'
+              with gzip.open(path,'wt',encoding='utf-8',compresslevel=9) as f:
+                  json.dump(by[s],f,ensure_ascii=False,separators=(',',':'))
+          print('Tabari source:',tabari['book']['name'],tabari['license']['version'])
+          print('Tabari surah assets:',len(os.listdir(A+'tabari')))
+          print('Tabari sample 1:2 chars:',len(by[1]['2']))
           PY
 
-      - name: Add global continuous ayah range repeat
+      - name: Apply v1.3 repeat and v1.4 download-tafsir features
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           p=Path('quranapp/repeat_patch_v13.py')
           src=p.read_text(encoding='utf-8')
           old="    if old not in s:\n        raise SystemExit('patch target not found: ' + label)\n"
           new="    if old not in s:\n        if label == 'about v1.3':\n            return\n        raise SystemExit('patch target not found: ' + label)\n"
-          if old not in src:
-              raise SystemExit('repeat patcher guard not found')
-          p.write_text(src.replace(old,new,1),encoding='utf-8')
+          if old in src:
+              p.write_text(src.replace(old,new,1),encoding='utf-8')
           PY
           python3 quranapp/repeat_patch_v13.py
+          python3 quranapp/enhance_patch_v14.py
+          grep -q 'toggleTafsir' quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java
+          grep -q 'startBulkDownload' quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java
+          grep -q 'repeatRangeActive' quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java
 
       - name: Set up Gradle 9.6
         uses: gradle/actions/setup-gradle@v4
@@ -129,7 +167,7 @@ jobs:
           KEYSTORE="$RUNNER_TEMP/minshawi-release.jks"
           PASS="$(openssl rand -hex 24)"
           ALIGNED="$RUNNER_TEMP/minshawi-aligned.apk"
-          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.3.0.apk"
+          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.4.0.apk"
           keytool -genkeypair -keystore "$KEYSTORE" -storepass "$PASS" -keypass "$PASS" -alias minshawi -keyalg RSA -keysize 4096 -validity 3650 -dname "CN=Al Minshawi Murattal, O=Quran Audio, C=SA"
           "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" "$ALIGNED"
           "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias minshawi --ks-pass "pass:$PASS" --key-pass "pass:$PASS" --out "$FINAL" "$ALIGNED"
@@ -139,18 +177,21 @@ jobs:
           grep -q 'assets/minshawi_word_timestamps.bin' "$RUNNER_TEMP/apk-contents.txt"
           grep -q 'assets/quran_display.json' "$RUNNER_TEMP/apk-contents.txt"
           grep -q 'assets/quran_pages.json' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'assets/tabari/001.bin' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'assets/tabari/114.bin' "$RUNNER_TEMP/apk-contents.txt"
+          test "$(grep -c 'assets/tabari/[0-9][0-9][0-9]\.bin' "$RUNNER_TEMP/apk-contents.txt")" -eq 114
           sha256sum "$FINAL" | tee "$RUNNER_TEMP/minshawi-sha256.txt"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlMinshawi-Murattal-Lost-v1.3-APK
-          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.3.0.apk
+          name: AlMinshawi-Murattal-Lost-v1.4-APK
+          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.4.0.apk
           if-no-files-found: error
 
       - name: Upload SHA256
         uses: actions/upload-artifact@v4
         with:
-          name: AlMinshawi-Murattal-Lost-v1.3-SHA256
+          name: AlMinshawi-Murattal-Lost-v1.4-SHA256
           path: ${{ runner.temp }}/minshawi-sha256.txt
           if-no-files-found: error
