@@ -1,0 +1,72 @@
+name: Build Al-Minshawi Murattal APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "quran-minshawi-lost-v1" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager)"; fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Build release APK
+        working-directory: quranapp
+        run: gradle assembleRelease --stacktrace
+
+      - name: Sign and verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          UNSIGNED_APK="$(find quranapp/build/outputs/apk/release -type f -name '*unsigned*.apk' | head -n 1)"
+          test -n "$UNSIGNED_APK"
+          KEYSTORE="$RUNNER_TEMP/minshawi-release.jks"
+          PASS="$(openssl rand -hex 24)"
+          ALIGNED="$RUNNER_TEMP/minshawi-aligned.apk"
+          FINAL="quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.0.0.apk"
+          keytool -genkeypair -keystore "$KEYSTORE" -storepass "$PASS" -keypass "$PASS" -alias minshawi -keyalg RSA -keysize 4096 -validity 3650 -dname "CN=Al Minshawi Murattal, O=Quran Audio, C=SA"
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias minshawi --ks-pass "pass:$PASS" --key-pass "pass:$PASS" --out "$FINAL" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$FINAL"
+          "$BUILD_TOOLS/zipalign" -c -v 4 "$FINAL"
+          sha256sum "$FINAL" | tee "$RUNNER_TEMP/minshawi-sha256.txt"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlMinshawi-Murattal-Lost-APK
+          path: quranapp/build/outputs/apk/release/AlMinshawi-Murattal-Lost-v1.0.0.apk
+          if-no-files-found: error
+
+      - name: Upload SHA256
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlMinshawi-Murattal-Lost-SHA256
+          path: ${{ runner.temp }}/minshawi-sha256.txt
+          if-no-files-found: error
