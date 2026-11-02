@@ -12,45 +12,55 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect exact Minshawi 1967 word timings and Quran text
+      - name: Inspect exact word timestamp schema and alignment
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/qua /tmp/quran
-          curl -fL --retry 3 -o /tmp/qua/minshawi.zip \
+          mkdir -p /tmp/qua
+          curl -fsSL --retry 3 -o /tmp/qua/minshawi.zip \
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
-          echo '=== ZIP LIST ==='
-          unzip -l /tmp/qua/minshawi.zip | head -80
           unzip -q /tmp/qua/minshawi.zip -d /tmp/qua/unpacked
-          echo '=== FILES ==='
-          find /tmp/qua/unpacked -maxdepth 3 -type f -printf '%P\n' | head -100
-          echo '=== SAMPLE CONTENT ==='
           python3 - <<'PY'
-          import os,json,glob
+          import gzip,json,urllib.request,re
           root='/tmp/qua/unpacked'
-          for p in glob.glob(root+'/**/*',recursive=True):
-              if not os.path.isfile(p): continue
-              if p.lower().endswith(('.json','.txt','.csv')):
-                  print('\nFILE',os.path.relpath(p,root),os.path.getsize(p))
-                  try:
-                      s=open(p,encoding='utf-8').read(5000)
-                      print(s[:5000])
-                  except Exception as e: print('ERR',e)
-          PY
-          curl -fL --retry 3 -o /tmp/quran/quran_uthmani.json \
-            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_uthmani.json
-          curl -fL --retry 3 -o /tmp/quran/quran_pages.json \
-            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_pages.json
-          echo '=== QURAN SCHEMA ==='
-          python3 - <<'PY'
-          import json
-          q=json.load(open('/tmp/quran/quran_uthmani.json',encoding='utf-8'))
-          print(type(q).__name__)
-          if isinstance(q,dict):
-              print('keys',list(q)[:10]);
-              for k in list(q)[:2]: print(k,repr(q[k])[:1500])
-          elif isinstance(q,list):
-              print('len',len(q)); print(repr(q[:2])[:4000])
-          p=json.load(open('/tmp/quran/quran_pages.json',encoding='utf-8'))
-          print('pages entries',len(p),'first',list(p.items())[:10],'last',list(p.items())[-5:])
+          cat=json.load(open(root+'/catalog.json',encoding='utf-8'))
+          print('CATALOG KEYS',cat.keys())
+          print('AUDIO KEYS',cat.get('audio',{}).keys())
+          print('OFFSETS',cat.get('audio',{}).get('chapter_offsets_ms',{}))
+          for fn in ['word_timestamps.json.gz','verse_timestamps.json.gz']:
+              with gzip.open(root+'/'+fn,'rt',encoding='utf-8') as f: d=json.load(f)
+              print('\n',fn,'type',type(d).__name__)
+              if isinstance(d,dict):
+                  print('keys sample',list(d)[:5])
+                  for k in list(d)[:3]: print('sample',k,repr(d[k])[:3000])
+              else: print('len',len(d),'sample',repr(d[:3])[:5000])
+          with gzip.open(root+'/word_timestamps.json.gz','rt',encoding='utf-8') as f: w=json.load(f)
+          # compact chapter timing extents, accepting common wire shapes
+          def times_for_ch(ch):
+              x=w.get(str(ch),w.get(ch)) if isinstance(w,dict) else None
+              vals=[]
+              def walk(o):
+                  if isinstance(o,dict):
+                      for a,b in [('start_ms','end_ms'),('start','end'),('time_start','time_end')]:
+                          if a in o and b in o:
+                              try: vals.append((float(o[a]),float(o[b])))
+                              except: pass
+                      for v in o.values(): walk(v)
+                  elif isinstance(o,list):
+                      if len(o)>=3 and all(isinstance(z,(int,float)) for z in o[-2:]): vals.append((float(o[-2]),float(o[-1])))
+                      else:
+                          for v in o: walk(v)
+              walk(x); return vals
+          raw=urllib.request.urlopen(urllib.request.Request('https://archive.org/metadata/a00ssssss260908ddd',headers={'User-Agent':'sync-check'}),timeout=30).read()
+          arc=json.loads(raw); durations={}
+          for f in arc.get('files',[]):
+              m=re.match(r'^(\d{3}).*\.mp3$',str(f.get('name','')),re.I)
+              if m:
+                  try: durations[int(m.group(1))]=float(f.get('length',0))*1000
+                  except: pass
+          for ch in [1,2,3,10,18,36,55,77,114]:
+              vals=times_for_ch(ch)
+              mx=max((b for a,b in vals),default=0)
+              mn=min((a for a,b in vals),default=0)
+              print('EXTENT',ch,'n=',len(vals),'min=',mn,'max=',mx,'archive_ms=',durations.get(ch),'delta=',None if not durations.get(ch) else durations[ch]-mx)
           PY
