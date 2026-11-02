@@ -1,0 +1,48 @@
+name: Inspect Quranpedia Tabari dump
+
+on:
+  push:
+    branches: [ "quran-minshawi-lost-v1" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect Quranpedia dump link and schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 'https://api.quranpedia.net/dumps' -o /tmp/dumps.html
+          python3 - <<'PY'
+          import re, html, urllib.parse
+          p=open('/tmp/dumps.html',encoding='utf-8').read()
+          matches=re.findall(r'href=["\']([^"\']*tafsir-book-4\.json\.gz[^"\']*)["\']', p)
+          print('matches=',matches[:10])
+          if not matches:
+              # print nearby server-rendered markup for diagnostics
+              i=p.find('tafsir-book-4.json.gz')
+              print('nearby=',p[max(0,i-500):i+500])
+              raise SystemExit('no dump href')
+          u=urllib.parse.urljoin('https://api.quranpedia.net/dumps', html.unescape(matches[0]))
+          print('download_url=',u)
+          open('/tmp/url.txt','w').write(u)
+          PY
+          URL="$(cat /tmp/url.txt)"
+          curl -fsSL --retry 3 "$URL" -o /tmp/tabari.json.gz
+          ls -lh /tmp/tabari.json.gz
+          python3 - <<'PY'
+          import gzip,json
+          with gzip.open('/tmp/tabari.json.gz','rt',encoding='utf-8') as f:
+              data=json.load(f)
+          print('root_type=',type(data).__name__)
+          if isinstance(data,dict):
+              print('root_keys=',list(data)[:30])
+          elif isinstance(data,list):
+              print('root_len=',len(data))
+          print('sample=',json.dumps(data if not isinstance(data,(list,dict)) else (data[:1] if isinstance(data,list) else {k:data[k] for k in list(data)[:3]}),ensure_ascii=False)[:12000])
+          PY
