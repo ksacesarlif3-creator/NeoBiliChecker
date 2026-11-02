@@ -30,52 +30,97 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
-      - name: Prepare Mushaf and exact Minshawi 1967 word timings
+      - name: Prepare exact Quran words and Minshawi 1967 synchronization data
         shell: bash
         run: |
           set -euo pipefail
           ASSETS="quranapp/src/main/assets"
-          mkdir -p "$ASSETS" "$RUNNER_TEMP/minshawi_sync"
+          TMP="$RUNNER_TEMP/minshawi_sync"
+          mkdir -p "$ASSETS" "$TMP"
 
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/minshawi_sync/qua.zip" \
+          curl -fsSL --retry 3 -o "$TMP/qua.zip" \
             https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/mohammed_siddiq_al_minshawi_1967_drive.zip
-          unzip -p "$RUNNER_TEMP/minshawi_sync/qua.zip" word_timestamps.json.gz > "$ASSETS/minshawi_word_timestamps.json.gz"
-          unzip -p "$RUNNER_TEMP/minshawi_sync/qua.zip" catalog.json > "$ASSETS/minshawi_catalog.json"
-          unzip -p "$RUNNER_TEMP/minshawi_sync/qua.zip" specials.json > "$ASSETS/minshawi_specials.json"
+          unzip -p "$TMP/qua.zip" word_timestamps.json.gz > "$ASSETS/minshawi_word_timestamps.json.gz"
+          unzip -p "$TMP/qua.zip" catalog.json > "$ASSETS/minshawi_catalog.json"
+          unzip -p "$TMP/qua.zip" specials.json > "$ASSETS/minshawi_specials.json"
 
-          # Uthmani Hafs text and 604-page map used by the reader view.
-          curl -fsSL --retry 3 -o "$ASSETS/quran_uthmani.json" \
-            https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_uthmani.json
+          curl -fsSL --retry 3 -o "$TMP/digital_khatt_v2_script.json" \
+            https://github.com/QUD-Technologies/quranic-universal-audio/releases/download/v4.0.0/digital_khatt_v2_script.json
+
+          # Page assignment is the standard 604-page Madinah layout. Text itself is rebuilt
+          # from the exact DigitalKhatt word locations used by the timing dataset.
           curl -fsSL --retry 3 -o "$ASSETS/quran_pages.json" \
             https://raw.githubusercontent.com/kamalyaser31/minshawi/main/data/assets/quran_pages.json
 
           python3 - <<'PY'
-          import gzip, json, re
-          a='quranapp/src/main/assets/'
-          q=json.load(open(a+'quran_uthmani.json',encoding='utf-8'))
-          p=json.load(open(a+'quran_pages.json',encoding='utf-8'))
-          w=json.load(gzip.open(a+'minshawi_word_timestamps.json.gz','rt',encoding='utf-8'))
-          c=json.load(open(a+'minshawi_catalog.json',encoding='utf-8'))
-          assert len(q)==6236, len(q)
-          assert len(p)==6236, len(p)
-          assert len(c['audio']['chapter_urls'])==114, len(c['audio']['chapter_urls'])
+          import gzip,json,os
+          from collections import defaultdict
+          A='quranapp/src/main/assets/'
+          T=os.environ['RUNNER_TEMP']+'/minshawi_sync/'
+          script=json.load(open(T+'digital_khatt_v2_script.json',encoding='utf-8'))
+          timing=json.load(gzip.open(A+'minshawi_word_timestamps.json.gz','rt',encoding='utf-8'))
+          pages=json.load(open(A+'quran_pages.json',encoding='utf-8'))
+          catalog=json.load(open(A+'minshawi_catalog.json',encoding='utf-8'))
+
+          display={}
           refs=set()
-          bad=[]
-          for row in w['rows']:
+          errors=[]
+          total_words=0
+          for row in timing['rows']:
               ref,start,end,canonical,silence,words=row
               if not canonical: continue
-              s,a0=(int(x) for x in ref.split(':'))
-              k=f'{s:03d}{a0:03d}'
+              s,a=(int(x) for x in ref.split(':'))
+              k=f'{s:03d}{a:03d}'
               refs.add(k)
-              text=q.get(k,'')
-              tokens=text.split()
-              maxidx=max((int(x[0]) for x in words),default=0)
-              if maxidx>len(tokens): bad.append((ref,maxidx,len(tokens),text))
-          print('Canonical timed ayahs:',len(refs),'Quran ayahs:',len(q),'word-index mismatches:',len(bad))
-          if bad:
-              print('First mismatches:',bad[:10])
-              raise SystemExit('Quran text tokenization does not match word timing indices')
-          assert len(refs)==6236
+              maxidx=max((int(w[0]) for w in words),default=0)
+              tokens=[]
+              for wi in range(1,maxidx+1):
+                  rec=script.get(f'{s}:{a}:{wi}')
+                  if not rec or not isinstance(rec.get('text'),str) or not rec['text'].strip():
+                      errors.append((ref,wi,'missing DigitalKhatt word'))
+                      break
+                  tokens.append(rec['text'].strip())
+              if len(tokens)==maxidx:
+                  display[k]=' '.join(tokens)
+                  total_words += len(tokens)
+
+          print('canonical ayahs',len(refs),'display ayahs',len(display),'timed words',total_words)
+          print('page entries',len(pages),'audio chapters',len(catalog['audio']['chapter_urls']))
+          print('sample 1:4 =',display.get('001004'))
+          if errors:
+              print('errors',errors[:20]); raise SystemExit('DigitalKhatt/timing mismatch')
+          assert len(refs)==6236 and len(display)==6236
+          assert len(pages)==6236
+          assert len(catalog['audio']['chapter_urls'])==114
+          for k,text in display.items():
+              assert k in pages, ('missing page',k)
+              assert text.strip(), ('empty text',k)
+          json.dump(display,open(A+'quran_display.json','w',encoding='utf-8'),ensure_ascii=False,separators=(',',':'))
+          PY
+
+      - name: Force playback/downloads to the exact QUA-matched audio source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          p='quranapp/src/main/java/com/minshawi/murattal/lost/MainActivityV2.java'
+          s=open(p,encoding='utf-8').read()
+          s=s.replace('        loadCachedUrls();\n','')
+          s=s.replace('        refreshArchiveIndex();\n','')
+          s=s.replace(
+          '''    private void playSurah(int index, int initialSeekMs) {\n        if (index < 0 || index >= 114) return;''',
+          '''    private void playSurah(int index, int initialSeekMs) {\n        if (index < 0 || index >= 114) return;\n        if (syncData == null) {\n            statusText.setText("جاري تجهيز مصدر التلاوة المتزامن…");\n            Toast.makeText(this, "بيانات التزامن تُجهز الآن، أعد المحاولة بعد لحظة", Toast.LENGTH_SHORT).show();\n            return;\n        }''')
+          old='''    private String getStreamUrl(int index) {\n        if (streamUrls[index] != null && !streamUrls[index].isEmpty()) return streamUrls[index];\n        return DOWNLOAD_BASE + String.format(Locale.US, "%03d.mp3", index + 1);\n    }'''
+          new='''    private String getStreamUrl(int index) {\n        if (syncData == null) return null;\n        return syncData.exactAudioUrl(index + 1);\n    }'''
+          if old not in s: raise SystemExit('getStreamUrl source block not found')
+          s=s.replace(old,new)
+          s=s.replace('new File(getFilesDir(), "audio")','new File(getFilesDir(), "audio_exact_v11")')
+          s=s.replace('" • بث مباشر"','" • المصدر المتزامن"')
+          s=s.replace('"تشغيل من نسخة الإذاعة 2026 • التزامن كلمة بكلمة مفعّل"','"تشغيل من المصدر الأصلي المطابق لتوقيت الكلمات • التزامن الدقيق مفعّل"')
+          s=s.replace('"تم ربط ١١٤ سورة • النص والتزامن جاهزان • يمكنك تنزيل أي سورة للأوفلاين"','"النص والتزامن جاهزان • التشغيل يستخدم المصدر الأصلي المطابق للتوقيت • يمكنك تنزيل أي سورة للأوفلاين"')
+          s=s.replace('"مصدر الصوت: نسخة بث 2026 على Archive.org. توقيتات الكلمات: Qur’anic Universal Audio. النص والصفحات: بيانات مصحف المدينة النبوية/حفص."',
+                      '"مصدر التشغيل المتزامن: التسجيل الأصلي للختمة الجديدة المطابق لتوقيتات Qur’anic Universal Audio. نسخة بث 2026 محفوظة كمرجع تاريخي لكنها لا تُستخدم للتظليل لأنها تختلف في بعض أعمال القص والمونتاج. النص: رسم عثماني حفص مع تقسيم صفحات مصحف المدينة 604 صفحة."')
+          open(p,'w',encoding='utf-8').write(s)
           PY
 
       - name: Set up Gradle 9.6
